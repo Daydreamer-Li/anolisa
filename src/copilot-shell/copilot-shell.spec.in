@@ -10,10 +10,11 @@ URL:            https://github.com/alibaba/anolisa
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  nodejs >= 20
+BuildRequires:  make
 Requires:       nodejs >= 20
 Requires(post):	  lua
 Requires(postun): lua
-Provides:       /usr/bin/co /usr/bin/copilot /usr/bin/cosh
+Provides:       %{_bindir}/co %{_bindir}/copilot %{_bindir}/cosh
 
 %description
 Copilot Shell - Entrance to AI-native OS.
@@ -23,28 +24,17 @@ AI-powered assistant that helps developers through natural language interaction.
 %setup -q
 
 %build
-npm ci --ignore-scripts
-npm run bundle
-npm run prepare:package
+make deps-ci
+make bundle
 
 %install
 rm -rf %{buildroot}
-mkdir -p %{buildroot}%{_datadir}/%{name}
-mkdir -p %{buildroot}%{_datadir}/%{name}/hooks
-mkdir -p %{buildroot}%{_bindir}
-
-# Copy dist contents
-cp -pr dist/* %{buildroot}%{_datadir}/%{name}/
-cp -pr hooks/* %{buildroot}%{_datadir}/%{name}/hooks/
-
-# Create symlink for CLI command
-ln -sf %{_datadir}/%{name}/cli.js %{buildroot}%{_bindir}/co
-ln -sf %{_datadir}/%{name}/cli.js %{buildroot}%{_bindir}/copilot
-ln -sf %{_datadir}/%{name}/cli.js %{buildroot}%{_bindir}/cosh
+make install DESTDIR=%{buildroot} PREFIX=%{_prefix}
 
 %files
 %license LICENSE
 %doc README.md
+%{_prefix}/lib/%{name}
 %{_datadir}/%{name}
 %{_bindir}/co
 %{_bindir}/copilot
@@ -52,7 +42,7 @@ ln -sf %{_datadir}/%{name}/cli.js %{buildroot}%{_bindir}/cosh
 
 %post -p <lua>
 nl        = '\n'
-cosh      = '/usr/bin/cosh'..nl
+cosh      = '%{_bindir}/cosh'..nl
 f = io.open('/etc/shells', 'a+')
 if f then
   local shells = nl..f:read('*all')..nl
@@ -67,7 +57,7 @@ then
   t={}
   for line in io.lines("/etc/shells")
   do
-    if line ~= "/usr/bin/cosh"
+    if line ~= "%{_bindir}/cosh"
     then
       table.insert(t,line)
     end
