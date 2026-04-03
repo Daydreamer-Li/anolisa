@@ -1,0 +1,158 @@
+###############################################################################
+# CHANGELOG semi-automatic generation
+#
+# Spec:
+#   Uses git-cliff to generate changelogs. A single shared cliff.toml is
+#   maintained at the repository root. The --include-path flag scopes commits
+#   to each sub-project. Generated output is reviewed by maintainers before
+#   merging into a release PR.
+#
+# Usage:
+#   Trigger manually via workflow_dispatch. Select a scope, the previous tag,
+#   and optionally the new release tag to label the section header.
+###############################################################################
+
+name: 📝 Generate CHANGELOG
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Component scope'
+        required: true
+        type: choice
+        options:
+          - cosh
+          - agent-sec-core
+          - agentsight
+          - os-skills
+      previous_tag:
+        description: 'Previous tag (e.g. cosh/v2.0.0). Leave empty to regenerate full changelog.'
+        required: false
+        type: string
+      release_tag:
+        description: 'New release tag (e.g. cosh/v2.1.0). Used to label the changelog section.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    name: 📝 Generate CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        run: |
+          # Pin to a specific version for reproducible builds.
+          # Update this value intentionally when upgrading git-cliff.
+          VERSION="2.4.0"
+          echo "Installing git-cliff v${VERSION}..."
+          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${VERSION}/git-cliff-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz
+          sudo mv "git-cliff-${VERSION}/git-cliff" /usr/local/bin/
+          git-cliff --version
+
+      - name: Determine paths and options
+        id: config
+        run: |
+          SCOPE="${{ inputs.scope }}"
+          PREV_TAG="${{ inputs.previous_tag }}"
+          REL_TAG="${{ inputs.release_tag }}"
+
+          case "$SCOPE" in
+            cosh)
+              INCLUDE_PATH="src/copilot-shell/**"
+              OUTPUT_PATH="src/copilot-shell/CHANGELOG.md"
+              ;;
+            agent-sec-core)
+              INCLUDE_PATH="src/agent-sec-core/**"
+              OUTPUT_PATH="src/agent-sec-core/CHANGELOG.md"
+              ;;
+            agentsight)
+              INCLUDE_PATH="src/agentsight/**"
+              OUTPUT_PATH="src/agentsight/CHANGELOG.md"
+              ;;
+            os-skills)
+              INCLUDE_PATH="src/os-skills/**"
+              OUTPUT_PATH="src/os-skills/CHANGELOG.md"
+              ;;
+          esac
+
+          echo "include_path=$INCLUDE_PATH" >> $GITHUB_OUTPUT
+          echo "output_path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
+          echo "scope=$SCOPE" >> $GITHUB_OUTPUT
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "range=${PREV_TAG}..HEAD" >> $GITHUB_OUTPUT
+            # Incremental update: prepend the new section to the existing file
+            echo "write_mode=prepend" >> $GITHUB_OUTPUT
+          else
+            echo "range=" >> $GITHUB_OUTPUT
+            # Full history regeneration: overwrite the file
+            echo "write_mode=overwrite" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -n "$REL_TAG" ]; then
+            echo "tag_flag=--tag $REL_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "tag_flag=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate CHANGELOG
+        run: |
+          RANGE="${{ steps.config.outputs.range }}"
+          INCLUDE="${{ steps.config.outputs.include_path }}"
+          OUTPUT="${{ steps.config.outputs.output_path }}"
+          WRITE_MODE="${{ steps.config.outputs.write_mode }}"
+          TAG_FLAG="${{ steps.config.outputs.tag_flag }}"
+
+          echo "📝 Generating CHANGELOG..."
+          echo "  Scope:      ${{ steps.config.outputs.scope }}"
+          echo "  Range:      ${RANGE:-'(full history)'}"
+          echo "  Include:    $INCLUDE"
+          echo "  Output:     $OUTPUT"
+          echo "  Write mode: $WRITE_MODE"
+
+          if [ "$WRITE_MODE" = "prepend" ]; then
+            git cliff $RANGE $TAG_FLAG \
+              --include-path "$INCLUDE" \
+              --prepend "$OUTPUT"
+          else
+            git cliff $TAG_FLAG \
+              --include-path "$INCLUDE" \
+              -o "$OUTPUT"
+          fi
+
+          echo "### Generated CHANGELOG" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -50 "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(${{ steps.config.outputs.scope }}): update CHANGELOG"
+          title: "chore(${{ steps.config.outputs.scope }}): update CHANGELOG"
+          body: |
+            ## 📝 CHANGELOG Auto-generated
+
+            **Scope**: `${{ steps.config.outputs.scope }}`
+            **Range**: `${{ steps.config.outputs.range || '(full history)' }}`
+            **Release tag**: `${{ inputs.release_tag || '(none — section labeled Unreleased)' }}`
+            **Include path**: `${{ steps.config.outputs.include_path }}`
+
+            ---
+
+            > 🤖 Generated by CHANGELOG Generator workflow.
+            > Please review the CHANGELOG content before merging.
+          branch: chore/changelog-${{ steps.config.outputs.scope }}
+          delete-branch: true
+          labels: docs

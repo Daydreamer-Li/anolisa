@@ -1,0 +1,194 @@
+###############################################################################
+# PR Lint gate — Commit Message + PR Title + Branch Name + Issue Link
+#
+# Jobs:
+#   commit-lint  — requires checkout; runs independently
+#   pr-checks    — all github-script checks consolidated into one runner
+#                  (PR title, branch name, linked issue)
+###############################################################################
+
+name: 🔍 PR Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main, 'feature/**', 'release/**']
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # =========================================================================
+  # Job 1: Commit Message Lint
+  # =========================================================================
+  commit-lint:
+    name: 📝 Commit Message Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint commit messages
+        uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: .github/commitlint.config.json
+
+  # =========================================================================
+  # Job 2: PR Checks (title + branch name + linked issue + merge hint)
+  # All steps share one runner — no checkout needed.
+  # =========================================================================
+  pr-checks:
+    name: 🔍 PR Checks
+    runs-on: ubuntu-latest
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: PR Title Validation
+      # -----------------------------------------------------------------------
+      - name: 📋 Validate PR title
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            console.log(`PR Title: "${title}"`);
+
+            // Conventional Commits pattern: type(scope): description
+            // Optional ! for breaking changes
+            const pattern = /^(feat|fix|refactor|perf|docs|chore|test|ci|build|style|revert)(\(.+\))!?: .+/;
+
+            if (!pattern.test(title)) {
+              core.setFailed(
+                `❌ PR title does not follow Conventional Commits format.\n\n` +
+                `Expected: type(scope): description\n` +
+                `Examples: feat(cosh): add json output\n` +
+                `          fix(agent-sec-core): handle sandbox escape\n\n` +
+                `Valid types: feat, fix, refactor, perf, docs, chore, test, ci, build, style, revert\n` +
+                `Valid scopes: cosh, agent-sec-core, os-skills, agentsight, deps, ci, docs, chore\n\n` +
+                `Current title: "${title}"`
+              );
+              return;
+            }
+
+            // Validate scope
+            const scopeMatch = title.match(/^\w+\(([^)]+)\)/);
+            if (scopeMatch) {
+              const scope = scopeMatch[1];
+              const validScopes = [
+                'cosh', 'agent-sec-core', 'os-skills', 'agentsight',
+                'deps', 'ci', 'docs', 'chore'
+              ];
+              if (!validScopes.includes(scope)) {
+                core.setFailed(
+                  `❌ Scope "${scope}" in PR title is not in the allowed list.\n\n` +
+                  `Valid scopes: ${validScopes.join(', ')}\n\n` +
+                  `Current title: "${title}"`
+                );
+                return;
+              }
+            }
+
+            console.log('✅ PR title format is valid');
+
+      # -----------------------------------------------------------------------
+      # Step 2: Branch Name Validation
+      # -----------------------------------------------------------------------
+      - name: 🌿 Validate branch name
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const baseBranch = context.payload.pull_request.base.ref;
+            console.log(`Head branch: "${branch}"`);
+            console.log(`Base branch: "${baseBranch}"`);
+
+            // Whitelist: these branches are always allowed
+            const whitelist = [
+              /^main$/,
+              /^dependabot\/.+/,
+              /^renovate\/.+/,
+              /^revert-.+/,
+              /^chore\/changelog-.+/,  // created by changelog.yml workflow
+            ];
+
+            for (const pattern of whitelist) {
+              if (pattern.test(branch)) {
+                console.log(`✅ Branch "${branch}" is whitelisted`);
+                return;
+              }
+            }
+
+            // Valid scopes — sub-projects and project-wide categories
+            const validScopes = ['cosh', 'agent-sec-core', 'os-skills', 'agentsight', 'ci', 'docs', 'deps'];
+            const scopePattern = validScopes.join('|');
+
+            // Valid branch patterns per development spec
+            const validPatterns = [
+              // feature/<scope>/<desc>
+              new RegExp(`^feature/(${scopePattern})/[a-z0-9][a-z0-9._-]*$`),
+              // feature/<scope>/<feature-name>/<task> (collaborative track)
+              new RegExp(`^feature/(${scopePattern})/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$`),
+              // fix/<scope>/<desc>
+              new RegExp(`^fix/(${scopePattern})/[a-z0-9][a-z0-9._-]*$`),
+              // release/<scope>/vX.Y
+              new RegExp(`^release/(${scopePattern})/v\\d+\\.\\d+$`),
+              // hotfix/<scope>/<desc>
+              new RegExp(`^hotfix/(${scopePattern})/[a-z0-9][a-z0-9._-]*$`),
+            ];
+
+            const isValid = validPatterns.some(p => p.test(branch));
+
+            if (!isValid) {
+              core.setFailed(
+                `❌ Branch "${branch}" does not follow the naming convention.\n\n` +
+                `Valid formats:\n` +
+                `  feature/<scope>/<short-desc>       e.g. feature/cosh/json-output\n` +
+                `  feature/<scope>/<name>/<task>      e.g. feature/cosh/auth-refactor/oauth\n` +
+                `  fix/<scope>/<short-desc>           e.g. fix/agent-sec-core/sandbox-escape\n` +
+                `  release/<scope>/vX.Y              e.g. release/cosh/v2.1\n` +
+                `  hotfix/<scope>/<short-desc>        e.g. hotfix/os-skills/broken-load\n\n` +
+                `Valid scopes: ${validScopes.join(', ')}\n` +
+                `Branch names must use lowercase letters, digits, hyphens, and dots only.`
+              );
+              return;
+            }
+
+            console.log('✅ Branch name is valid');
+
+      # -----------------------------------------------------------------------
+      # Step 3: Linked Issue Check
+      # -----------------------------------------------------------------------
+      - name: 🔗 Check linked issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            // Accept standard GitHub closing keywords linking to an issue number
+            const closingKeywords = /\b(closes|fixes|resolves|close|fix|resolve)\s+#\d+/i;
+
+            // Accept explicit exemption: no-issue: <reason>
+            const noIssueExemption = /no-issue\s*:/i;
+
+            if (closingKeywords.test(body)) {
+              const match = body.match(/(?:closes|fixes|resolves|close|fix|resolve)\s+#(\d+)/i);
+              console.log(`✅ PR is linked to issue #${match[1]}`);
+              return;
+            }
+
+            if (noIssueExemption.test(body)) {
+              const exemptMatch = body.match(/no-issue\s*:\s*(.+)/i);
+              console.log(`✅ Issue link exempted: ${exemptMatch?.[1]?.trim() || '(no reason given)'}`);
+              return;
+            }
+
+            core.setFailed(
+              `❌ This PR does not reference a linked issue.\n\n` +
+              `Every PR must include one of the following in the PR description:\n\n` +
+              `  closes #<number>\n` +
+              `  fixes #<number>\n` +
+              `  resolves #<number>\n\n` +
+              `If there is genuinely no applicable issue, add:\n` +
+              `  no-issue: <brief reason>\n\n` +
+              `Please create an issue first at https://github.com/alibaba/anolisa/issues/new`
+            );

@@ -4,9 +4,19 @@
 
 ## Related Issue
 
-<!-- Link the related issue. Required for new features and non-trivial changes. -->
+<!--
+  REQUIRED: Every PR must be linked to an existing issue.
+  Use one of the closing keywords so the issue closes automatically on merge:
 
-- [ ] Related issue linked (recommended for new features and non-trivial changes)
+    closes #<number>
+    fixes #<number>
+    resolves #<number>
+
+  If this is a trivial typo / doc-only fix with no issue, write:
+    no-issue: <reason>
+-->
+
+closes #
 
 ## Type of Change
 
