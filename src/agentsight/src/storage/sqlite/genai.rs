@@ -5,9 +5,9 @@
 //!
 //! # Size Limit
 //!
-//! The database is limited to 200MB. When approaching the limit, old records
-//! are pruned automatically. The size check includes the main database file
-//! plus WAL and SHM files.
+//! The database size can be configured via `AGENTSIGHT_GENAI_DB_MAX_SIZE_MB` environment
+//! variable (default: 200 MB). When approaching 90% of the limit, old records are pruned
+//! automatically. The size check includes the main database file plus WAL and SHM files.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -17,16 +17,30 @@ use crate::genai::semantic::GenAISemanticEvent;
 use crate::genai::exporter::GenAIExporter;
 use super::connection::{create_connection, default_base_path};
 
-// ─── Size limit constants ─────────────────────────────────────────────────────
+// ─── Size limit configuration ──────────────────────────────────────────────────
 
-/// Maximum database size: 200 MB
-const MAX_DB_SIZE: u64 = 200 * 1024 * 1024;
-/// Threshold to start pruning: 180 MB (90% of max)
-const PRUNE_THRESHOLD: u64 = 180 * 1024 * 1024;
+/// Environment variable name for max database size in MB
+const ENV_MAX_DB_SIZE_MB: &str = "AGENTSIGHT_GENAI_DB_MAX_SIZE_MB";
+/// Default max database size: 200 MB
+const DEFAULT_MAX_DB_SIZE_MB: u64 = 200;
 /// Percentage of records to prune per attempt
 const PRUNE_PERCENT: f64 = 0.05;
 /// Maximum prune retry attempts to avoid infinite loop
 const MAX_PRUNE_RETRIES: u32 = 3;
+
+/// Get max database size from environment variable or use default
+fn get_max_db_size() -> u64 {
+    std::env::var(ENV_MAX_DB_SIZE_MB)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_DB_SIZE_MB)
+        * 1024 * 1024
+}
+
+/// Get prune threshold (90% of max)
+fn get_prune_threshold() -> u64 {
+    (get_max_db_size() as f64 * 0.9) as u64
+}
 
 // ─── Query result types ────────────────────────────────────────────────────────
 
@@ -142,11 +156,13 @@ impl GenAISqliteStore {
         
         // Log current database size on startup
         let current_size = store.get_total_db_size();
+        let max_size = get_max_db_size();
+        let threshold = get_prune_threshold();
         log::info!(
             "GenAISqliteStore initialized: db_size={}MB, threshold={}MB, max={}MB",
             current_size / 1024 / 1024,
-            PRUNE_THRESHOLD / 1024 / 1024,
-            MAX_DB_SIZE / 1024 / 1024
+            threshold / 1024 / 1024,
+            max_size / 1024 / 1024
         );
         
         Ok(store)
@@ -831,30 +847,31 @@ impl GenAISqliteStore {
     /// Keeps pruning until size drops below threshold to avoid repeated triggers.
     fn check_and_prune_if_needed(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut current_size = self.get_total_db_size();
+        let threshold = get_prune_threshold();
         
-        if current_size < PRUNE_THRESHOLD {
+        if current_size < threshold {
             return Ok(());
         }
         
         log::info!(
             "Database size {}MB exceeding threshold {}MB, pruning old records",
             current_size / 1024 / 1024,
-            PRUNE_THRESHOLD / 1024 / 1024
+            threshold / 1024 / 1024
         );
         
         // Keep pruning until below threshold (max 5 iterations to prevent infinite loop)
         let mut iterations = 0;
-        while current_size >= PRUNE_THRESHOLD && iterations < 5 {
+        while current_size >= threshold && iterations < 5 {
             iterations += 1;
             self.prune_old_records()?;
             self.checkpoint()?;
             current_size = self.get_total_db_size();
             
-            if current_size >= PRUNE_THRESHOLD {
+            if current_size >= threshold {
                 log::info!(
                     "Database still {}MB (threshold {}MB), continue pruning (iteration {})",
                     current_size / 1024 / 1024,
-                    PRUNE_THRESHOLD / 1024 / 1024,
+                    threshold / 1024 / 1024,
                     iterations
                 );
             }
