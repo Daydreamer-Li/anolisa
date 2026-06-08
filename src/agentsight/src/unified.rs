@@ -1124,8 +1124,21 @@ impl AgentSight {
                                                     "DeadLoop auto-kill: sending SIGTERM to pid {} (conversation={}, detections={})",
                                                     pid, cid, new_count
                                                 );
-                                                unsafe {
-                                                    libc::kill(pid, libc::SIGTERM);
+                                                let ret = unsafe { libc::kill(pid, libc::SIGTERM) };
+                                                if ret != 0 {
+                                                    let err = std::io::Error::last_os_error();
+                                                    log::error!(
+                                                        "DeadLoop auto-kill: SIGTERM failed for pid {}: {} — escalating to SIGKILL",
+                                                        pid, err
+                                                    );
+                                                    let ret2 = unsafe { libc::kill(pid, libc::SIGKILL) };
+                                                    if ret2 != 0 {
+                                                        let err2 = std::io::Error::last_os_error();
+                                                        log::error!(
+                                                            "DeadLoop auto-kill: SIGKILL also failed for pid {}: {}",
+                                                            pid, err2
+                                                        );
+                                                    }
                                                 }
                                             }
                                         } else {

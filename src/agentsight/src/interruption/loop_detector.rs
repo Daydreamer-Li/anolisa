@@ -279,25 +279,49 @@ impl LoopDetector {
 
 // ─── Utility functions ───────────────────────────────────────────────────────
 
-/// Compute Jaccard similarity between two text strings based on whitespace-split tokens.
+/// Compute Jaccard similarity between two text strings using character bigrams.
 ///
-/// Returns a value in [0.0, 1.0] where 1.0 means identical token sets.
+/// Uses character-level bigrams instead of whitespace-split tokens to properly
+/// handle CJK text (Chinese/Japanese/Korean) which has no word boundaries.
+/// Returns a value in [0.0, 1.0] where 1.0 means identical bigram sets.
 fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    let set_a: HashSet<&str> = a.split_whitespace().collect();
-    let set_b: HashSet<&str> = b.split_whitespace().collect();
-
-    if set_a.is_empty() && set_b.is_empty() {
+    if a.is_empty() && b.is_empty() {
         return 1.0;
     }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
 
-    let intersection = set_a.intersection(&set_b).count();
-    let union = set_a.union(&set_b).count();
+    let bigrams_a = char_bigrams(a);
+    let bigrams_b = char_bigrams(b);
+
+    if bigrams_a.is_empty() && bigrams_b.is_empty() {
+        // Single-character strings: fall back to equality check
+        return if a == b { 1.0 } else { 0.0 };
+    }
+
+    let intersection = bigrams_a.intersection(&bigrams_b).count();
+    let union = bigrams_a.union(&bigrams_b).count();
 
     if union == 0 {
         return 0.0;
     }
 
     intersection as f64 / union as f64
+}
+
+/// Extract character bigrams from a string, normalizing whitespace.
+///
+/// For "hello world" → {"he", "el", "ll", "lo", "o ", " w", "wo", "or", "rl", "ld"}
+/// For "你好世界" → {"你好", "好世", "世界"}
+fn char_bigrams(s: &str) -> HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 2 {
+        return HashSet::new();
+    }
+    chars.windows(2)
+        .map(|w| format!("{}{}", w[0], w[1]))
+        .collect()
 }
 
 /// Truncate a string to at most `max_len` characters, appending "..." if truncated.
@@ -513,18 +537,68 @@ mod tests {
 
     #[test]
     fn test_jaccard_similarity_disjoint() {
-        assert_eq!(jaccard_similarity("hello world", "foo bar"), 0.0);
+        let sim = jaccard_similarity("hello world", "foo bar");
+        // Character bigrams have no overlap between "hello world" and "foo bar"
+        assert!(sim < 0.1);
     }
 
     #[test]
     fn test_jaccard_similarity_partial() {
         let sim = jaccard_similarity("the quick brown fox", "the quick red fox");
-        // intersection: {the, quick, fox} = 3, union: {the, quick, brown, red, fox} = 5
-        assert!((sim - 0.6).abs() < 0.01);
+        // Most bigrams overlap; similarity should be high but not 1.0
+        assert!(sim > 0.5);
+        assert!(sim < 1.0);
     }
 
     #[test]
     fn test_jaccard_similarity_empty() {
         assert_eq!(jaccard_similarity("", ""), 1.0);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_one_empty() {
+        assert_eq!(jaccard_similarity("hello", ""), 0.0);
+        assert_eq!(jaccard_similarity("", "world"), 0.0);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_cjk_near_identical() {
+        let a = "根据分析，该数据集包含1000条记录，其中异常值占比约3.2%，建议进一步清洗后重新统计。";
+        let b = "根据分析，该数据集包含1000条记录，其中异常值占比约3.5%，建议进一步清洗后重新统计。";
+        let sim = jaccard_similarity(a, b);
+        // With bigrams, these near-identical CJK strings should have high similarity
+        assert!(sim > 0.9, "CJK similarity was {}, expected > 0.9", sim);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_cjk_different() {
+        let a = "今天天气很好，适合出门散步。";
+        let b = "这个算法的时间复杂度是线性的。";
+        let sim = jaccard_similarity(a, b);
+        // Completely different CJK text should have low similarity
+        assert!(sim < 0.2, "CJK different text similarity was {}, expected < 0.2", sim);
+    }
+
+    #[test]
+    fn test_char_bigrams_english() {
+        let bigrams = char_bigrams("abc");
+        assert!(bigrams.contains("ab"));
+        assert!(bigrams.contains("bc"));
+        assert_eq!(bigrams.len(), 2);
+    }
+
+    #[test]
+    fn test_char_bigrams_cjk() {
+        let bigrams = char_bigrams("你好世界");
+        assert!(bigrams.contains("你好"));
+        assert!(bigrams.contains("好世"));
+        assert!(bigrams.contains("世界"));
+        assert_eq!(bigrams.len(), 3);
+    }
+
+    #[test]
+    fn test_char_bigrams_single_char() {
+        let bigrams = char_bigrams("a");
+        assert!(bigrams.is_empty());
     }
 }
