@@ -614,7 +614,7 @@ pub async fn interruption_count(
     let end_ns   = query.end_ns.unwrap_or_else(|| now_ns() as i64);
     let start_ns = query.start_ns.unwrap_or_else(|| end_ns - 86_400_000_000_000i64);
 
-    match istore.stats(start_ns, end_ns) {
+    match istore.stats_filtered(start_ns, end_ns, query.agent_name.as_deref()) {
         Ok(stats) => {
             let mut total = 0u64;
             let mut critical = 0u64;
@@ -661,7 +661,7 @@ pub async fn interruption_stats(
     let end_ns   = query.end_ns.unwrap_or_else(|| now_ns() as i64);
     let start_ns = query.start_ns.unwrap_or_else(|| end_ns - 86_400_000_000_000i64);
 
-    match istore.stats(start_ns, end_ns) {
+    match istore.stats_filtered(start_ns, end_ns, query.agent_name.as_deref()) {
         Ok(stats) => HttpResponse::Ok().json(stats),
         Err(e)    => HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()})),

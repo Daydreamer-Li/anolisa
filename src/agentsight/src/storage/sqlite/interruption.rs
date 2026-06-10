@@ -403,15 +403,39 @@ impl InterruptionStore {
         start_ns: i64,
         end_ns: i64,
     ) -> Result<Vec<InterruptionTypeStat>, Box<dyn std::error::Error>> {
+        self.stats_filtered(start_ns, end_ns, None)
+    }
+
+    /// Like `stats` but optionally filtered by agent_name.
+    pub fn stats_filtered(
+        &self,
+        start_ns: i64,
+        end_ns: i64,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<InterruptionTypeStat>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT interruption_type, severity, COUNT(*) AS cnt
-             FROM interruption_events
-             WHERE occurred_at_ns BETWEEN ?1 AND ?2
-             GROUP BY interruption_type
-             ORDER BY cnt DESC",
-        )?;
-        let rows = stmt.query_map(params![start_ns, end_ns], |row| {
+        let (sql, args): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(agent) = agent_name {
+            (
+                "SELECT interruption_type, severity, COUNT(*) AS cnt
+                 FROM interruption_events
+                 WHERE occurred_at_ns BETWEEN ?1 AND ?2 AND agent_name = ?3
+                 GROUP BY interruption_type, severity
+                 ORDER BY cnt DESC".to_string(),
+                vec![Box::new(start_ns), Box::new(end_ns), Box::new(agent.to_string())],
+            )
+        } else {
+            (
+                "SELECT interruption_type, severity, COUNT(*) AS cnt
+                 FROM interruption_events
+                 WHERE occurred_at_ns BETWEEN ?1 AND ?2
+                 GROUP BY interruption_type, severity
+                 ORDER BY cnt DESC".to_string(),
+                vec![Box::new(start_ns), Box::new(end_ns)],
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|a| a.as_ref()).collect();
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
             Ok(InterruptionTypeStat {
                 interruption_type: row.get(0)?,
                 severity: row.get(1)?,

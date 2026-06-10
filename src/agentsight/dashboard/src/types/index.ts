@@ -218,7 +218,7 @@ export interface AtifStep {
   tool_calls?: AtifToolCall[];
   observation?: AtifObservation;
   metrics?: AtifStepMetrics;
-  extra?: any;
+  extra?: { call_id?: string; [key: string]: any };
 }
 
 export interface AtifAgent {

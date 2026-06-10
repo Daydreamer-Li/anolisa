@@ -525,7 +525,9 @@ fn build_agent_step(
         },
         observation,
         metrics,
-        extra: None,
+        extra: event.call_id.as_ref().map(|cid| {
+            serde_json::json!({ "call_id": cid })
+        }),
     }
 }
 

@@ -3,7 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
   AtifDocument, AtifStep, AtifToolCall, AtifObservation, AtifStepMetrics,
 } from '../types';
-import { fetchAtifBySession, fetchAtifByConversation } from '../utils/apiClient';
+import {
+  fetchAtifBySession, fetchAtifByConversation,
+  fetchSessionInterruptions, fetchConversationInterruptions,
+  InterruptionRecord, INTERRUPTION_TYPE_CN,
+} from '../utils/apiClient';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -115,15 +119,29 @@ const ExpandableText: React.FC<{ text: string; className?: string }> = ({ text, 
   );
 };
 
+// ─── Severity styling ─────────────────────────────────────────────────────────
+
+const SEVERITY_STYLES: Record<string, { border: string; bg: string; text: string; dot: string; label: string }> = {
+  critical: { border: 'border-red-400', bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500', label: '严重' },
+  high:     { border: 'border-orange-400', bg: 'bg-orange-50', text: 'text-orange-700', dot: 'bg-orange-500', label: '高危' },
+  medium:   { border: 'border-yellow-400', bg: 'bg-yellow-50', text: 'text-yellow-700', dot: 'bg-yellow-500', label: '中危' },
+  low:      { border: 'border-blue-300', bg: 'bg-blue-50', text: 'text-blue-700', dot: 'bg-blue-400', label: '低危' },
+};
+
+function getSeverityStyle(severity: string) {
+  return SEVERITY_STYLES[severity] ?? SEVERITY_STYLES.low;
+}
+
 // ─── StepCard ─────────────────────────────────────────────────────────────────
 
 interface StepCardProps {
   step: AtifStep;
+  interruptions: InterruptionRecord[];
   expandedSections: Set<string>;
   onToggleSection: (key: string) => void;
 }
 
-const StepCard: React.FC<StepCardProps> = ({ step, expandedSections, onToggleSection }) => {
+const StepCard: React.FC<StepCardProps> = ({ step, interruptions, expandedSections, onToggleSection }) => {
   const style = getSourceStyle(step.source);
   const sectionKey = (name: string) => `${step.step_id}-${name}`;
   const isOpen = (name: string) => expandedSections.has(sectionKey(name));
@@ -136,14 +154,23 @@ const StepCard: React.FC<StepCardProps> = ({ step, expandedSections, onToggleSec
     step.metrics.prompt_tokens != null ||
     step.metrics.completion_tokens != null
   );
+  const hasInterruptions = interruptions.length > 0;
+  // Pick the highest severity for border highlight
+  const highestSeverity = hasInterruptions
+    ? (['critical', 'high', 'medium', 'low'].find(s => interruptions.some(i => i.severity === s)) ?? 'low')
+    : null;
 
   return (
     <div className="relative pl-8 mb-4">
-      {/* Timeline dot */}
-      <div className={`absolute left-0 top-4 w-3 h-3 rounded-full ring-2 ring-white ${style.dot}`} />
+      {/* Timeline dot — red pulsing if interrupted */}
+      {hasInterruptions ? (
+        <div className="absolute left-0 top-4 w-3 h-3 rounded-full ring-2 ring-white bg-red-500 animate-pulse" />
+      ) : (
+        <div className={`absolute left-0 top-4 w-3 h-3 rounded-full ring-2 ring-white ${style.dot}`} />
+      )}
 
       {/* Card */}
-      <div className={`bg-white rounded-xl shadow-sm border border-gray-200 border-l-4 ${style.border} overflow-hidden`}>
+      <div className={`bg-white rounded-xl shadow-sm border ${hasInterruptions ? `border-2 ${getSeverityStyle(highestSeverity!).border}` : 'border border-gray-200'} border-l-4 ${hasInterruptions ? getSeverityStyle(highestSeverity!).border : style.border} overflow-hidden`}>
         {/* Header */}
         <div className="px-5 py-3 flex items-center gap-3 flex-wrap">
           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${style.badge}`}>
@@ -158,6 +185,15 @@ const StepCard: React.FC<StepCardProps> = ({ step, expandedSections, onToggleSec
               {step.model_name}
             </span>
           )}
+          {/* Interruption badges */}
+          {hasInterruptions && interruptions.map((intr) => {
+            const ss = getSeverityStyle(intr.severity);
+            return (
+              <span key={intr.interruption_id} className={`px-2 py-0.5 rounded-full text-xs font-medium ${ss.bg} ${ss.text} border ${ss.border}`}>
+                ⚠️ {INTERRUPTION_TYPE_CN[intr.interruption_type] ?? intr.interruption_type} ({ss.label})
+              </span>
+            );
+          })}
         </div>
 
         {/* Body */}
@@ -255,6 +291,44 @@ const StepCard: React.FC<StepCardProps> = ({ step, expandedSections, onToggleSec
               )}
             </>
           )}
+
+          {/* Interruption details (shown for any step source) */}
+          {hasInterruptions && (
+            <Collapsible
+              icon="⚠️"
+              title="异常中断详情"
+              count={interruptions.length}
+              isOpen={isOpen('interruptions')}
+              onToggle={() => toggle('interruptions')}
+            >
+              <div className="space-y-2">
+                {interruptions.map((intr) => {
+                  const ss = getSeverityStyle(intr.severity);
+                  return (
+                    <div key={intr.interruption_id} className={`border rounded-lg p-3 ${ss.bg} ${ss.border}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`w-2 h-2 rounded-full ${ss.dot}`} />
+                        <span className={`text-sm font-medium ${ss.text}`}>
+                          {INTERRUPTION_TYPE_CN[intr.interruption_type] ?? intr.interruption_type}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${ss.bg} ${ss.text} border ${ss.border}`}>
+                          {ss.label}
+                        </span>
+                        <span className="text-xs text-gray-400 ml-auto">
+                          {new Date(intr.occurred_at_ns / 1_000_000).toLocaleString('zh-CN')}
+                        </span>
+                      </div>
+                      {intr.detail && (
+                        <pre className="mt-2 text-xs text-gray-700 whitespace-pre-wrap break-words bg-white bg-opacity-60 rounded p-2 max-h-32 overflow-y-auto">
+                          {intr.detail}
+                        </pre>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Collapsible>
+          )}
         </div>
       </div>
     </div>
@@ -345,6 +419,7 @@ export const AtifViewerPage: React.FC = () => {
 
   // Data state
   const [doc, setDoc] = useState<AtifDocument | null>(null);
+  const [interruptions, setInterruptions] = useState<InterruptionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -371,16 +446,25 @@ export const AtifViewerPage: React.FC = () => {
     setLoading(true);
     setError(null);
     setDoc(null);
+    setInterruptions([]);
     setExpandedSections(new Set());
 
     try {
       let data: AtifDocument;
+      let intrs: InterruptionRecord[] = [];
       if (t === 'conversation') {
-        data = await fetchAtifByConversation(i.trim());
+        [data, intrs] = await Promise.all([
+          fetchAtifByConversation(i.trim()),
+          fetchConversationInterruptions(i.trim()).catch(() => [] as InterruptionRecord[]),
+        ]);
       } else {
-        data = await fetchAtifBySession(i.trim());
+        [data, intrs] = await Promise.all([
+          fetchAtifBySession(i.trim()),
+          fetchSessionInterruptions(i.trim()).catch(() => [] as InterruptionRecord[]),
+        ]);
       }
       setDoc(data);
+      setInterruptions(intrs);
     } catch (e: any) {
       setError(e.message ?? '加载失败');
     } finally {
@@ -606,6 +690,11 @@ export const AtifViewerPage: React.FC = () => {
                 <span className="ml-2 text-sm font-normal text-gray-400">
                   共 {doc.steps.length} 步
                 </span>
+                {interruptions.length > 0 && (
+                  <span className="ml-2 px-2 py-0.5 bg-red-100 text-red-700 border border-red-300 rounded-full text-xs font-medium">
+                    ⚠️ {interruptions.length} 个异常中断
+                  </span>
+                )}
               </h2>
 
               {doc.steps.length === 0 ? (
@@ -618,14 +707,32 @@ export const AtifViewerPage: React.FC = () => {
                   {/* Vertical line */}
                   <div className="absolute left-[5px] top-4 bottom-4 w-0.5 bg-gray-200" />
 
-                  {doc.steps.map(step => (
-                    <StepCard
-                      key={step.step_id}
-                      step={step}
-                      expandedSections={expandedSections}
-                      onToggleSection={toggleSection}
-                    />
-                  ))}
+                  {doc.steps.map(step => {
+                    // Match interruptions to this step via call_id or timestamp
+                    const stepCallId = step.extra?.call_id;
+                    const stepInterruptions = interruptions.filter(intr => {
+                      // Match by call_id if available
+                      if (stepCallId && intr.call_id) {
+                        return intr.call_id === stepCallId;
+                      }
+                      // Fallback: match by timestamp proximity (within same step window)
+                      if (step.timestamp && intr.occurred_at_ns) {
+                        const stepTs = new Date(step.timestamp).getTime() * 1_000_000;
+                        // Within ±30 seconds of the step timestamp
+                        return Math.abs(intr.occurred_at_ns - stepTs) < 30_000_000_000;
+                      }
+                      return false;
+                    });
+                    return (
+                      <StepCard
+                        key={step.step_id}
+                        step={step}
+                        interruptions={stepInterruptions}
+                        expandedSections={expandedSections}
+                        onToggleSection={toggleSection}
+                      />
+                    );
+                  })}
                 </div>
               )}
             </div>

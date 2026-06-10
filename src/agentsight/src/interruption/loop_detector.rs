@@ -30,10 +30,10 @@ pub struct LoopDetectorConfig {
 impl Default for LoopDetectorConfig {
     fn default() -> Self {
         Self {
-            tool_sequence_repeat_threshold: 3,
-            window_size: 10,
+            tool_sequence_repeat_threshold: 5,
+            window_size: 12,
             output_similarity_threshold: 0.85,
-            similar_output_repeat_threshold: 3,
+            similar_output_repeat_threshold: 5,
         }
     }
 }
@@ -362,7 +362,11 @@ mod tests {
 
     #[test]
     fn test_tool_sequence_loop_detected() {
-        let detector = LoopDetector::default();
+        let detector = LoopDetector::new(LoopDetectorConfig {
+            tool_sequence_repeat_threshold: 3,
+            similar_output_repeat_threshold: 3,
+            ..Default::default()
+        });
         let calls = vec![
             make_call(vec!["read_file", "search"], "output a", 100),
             make_call(vec!["read_file", "search"], "output b", 200),
@@ -380,7 +384,11 @@ mod tests {
 
     #[test]
     fn test_tool_sequence_no_loop_different_tools() {
-        let detector = LoopDetector::default();
+        let detector = LoopDetector::new(LoopDetectorConfig {
+            tool_sequence_repeat_threshold: 3,
+            similar_output_repeat_threshold: 3,
+            ..Default::default()
+        });
         let calls = vec![
             make_call(vec!["read_file", "search"], "output a", 100),
             make_call(vec!["write_file"], "output b", 200),
@@ -394,7 +402,11 @@ mod tests {
     #[test]
     fn test_tool_sequence_loop_with_interleaved_text_calls() {
         // Simulates OpenClaw architecture: tool_call → text → tool_call → text → tool_call → text
-        let detector = LoopDetector::default();
+        let detector = LoopDetector::new(LoopDetectorConfig {
+            tool_sequence_repeat_threshold: 3,
+            similar_output_repeat_threshold: 3,
+            ..Default::default()
+        });
         let calls = vec![
             make_call(vec!["read_file"], "reading file...", 100),
             make_call(vec![], "Here is the content of the file.", 200),
@@ -414,7 +426,11 @@ mod tests {
 
     #[test]
     fn test_output_similarity_loop_detected() {
-        let detector = LoopDetector::default();
+        let detector = LoopDetector::new(LoopDetectorConfig {
+            tool_sequence_repeat_threshold: 3,
+            similar_output_repeat_threshold: 3,
+            ..Default::default()
+        });
         let calls = vec![
             make_call(vec![], "The quick brown fox jumps over the lazy dog repeatedly", 100),
             make_call(vec![], "The quick brown fox jumps over the lazy dog repeatedly", 200),
@@ -429,7 +445,11 @@ mod tests {
 
     #[test]
     fn test_output_similarity_no_loop_different_outputs() {
-        let detector = LoopDetector::default();
+        let detector = LoopDetector::new(LoopDetectorConfig {
+            tool_sequence_repeat_threshold: 3,
+            similar_output_repeat_threshold: 3,
+            ..Default::default()
+        });
         let calls = vec![
             make_call(vec![], "completely different output alpha", 100),
             make_call(vec![], "totally unrelated text beta gamma", 200),
@@ -443,6 +463,7 @@ mod tests {
     fn test_token_burn_detected() {
         let detector = LoopDetector::new(LoopDetectorConfig {
             tool_sequence_repeat_threshold: 5, // raise so rule 1 doesn't fire
+            similar_output_repeat_threshold: 3,
             ..Default::default()
         });
         let output = "I will try to help you with this task using the available tools";

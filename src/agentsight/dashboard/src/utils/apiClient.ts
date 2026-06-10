@@ -335,11 +335,13 @@ export interface InterruptionTypeStat {
  */
 export async function fetchInterruptionStats(
   startNs: number,
-  endNs: number
+  endNs: number,
+  agentName?: string
 ): Promise<InterruptionTypeStat[]> {
   const params = new URLSearchParams();
   params.set('start_ns', String(startNs));
   params.set('end_ns', String(endNs));
+  if (agentName) params.set('agent_name', agentName);
   return apiFetch<InterruptionTypeStat[]>(
     `${API_BASE}/api/interruptions/stats?${params.toString()}`
   );
