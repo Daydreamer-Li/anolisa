@@ -359,6 +359,16 @@ build_agentsight() {
     fi
     (
         cd "$SIGHT_DIR"
+        # Build frontend (embed into Rust binary via include_dir!)
+        if [ -d "dashboard" ] && command -v npm &>/dev/null; then
+            log "Building frontend..."
+            cd dashboard
+            npm install
+            npm run build:embed
+            cd "$SIGHT_DIR"
+        else
+            warn "Skipping frontend build (dashboard/ not found or npm unavailable)"
+        fi
         cargo build --release
     )
 
