@@ -264,8 +264,11 @@ impl HealthChecker {
 
             // Infer role:
             //   1. ports != empty            → Gateway (real service with TCP port)
-            //   2. parent is same agent_name → Worker (genuine fork, fold under parent)
-            //   3. otherwise                 → Gateway (independent process, own card)
+            //   2. agent has no service port → Client (stand-alone CLI like Codex
+            //                                  whose UI card adds no value when
+            //                                  there is no gateway endpoint)
+            //   3. parent is same agent_name → Worker (genuine fork, fold under parent)
+            //   4. otherwise                 → Gateway (independent process, own card)
             //
             // Two separately-launched hermes/openclaw client instances are
             // independent (no parent-child link, different terminals), so they
@@ -273,6 +276,8 @@ impl HealthChecker {
             // associated-processes drawer of their parent.
             let role = if !ports.is_empty() {
                 AgentRole::Gateway
+            } else if agent.agent_info.name == "Codex" {
+                AgentRole::Client
             } else if let Some(pp) = ppid {
                 if agent_name_by_pid
                     .get(&pp)

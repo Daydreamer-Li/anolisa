@@ -224,7 +224,7 @@ impl AgentScanner {
     }
 
     /// Attempt to match a process against known agents
-    fn try_match_process(&self, pid: u32) -> Option<DiscoveredAgent> {
+    pub fn try_match_process(&self, pid: u32) -> Option<DiscoveredAgent> {
         let proc_dir = format!("/proc/{pid}");
 
         // Read process name from /proc/[pid]/comm

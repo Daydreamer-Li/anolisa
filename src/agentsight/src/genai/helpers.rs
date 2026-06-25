@@ -13,6 +13,7 @@ use crate::discovery::matcher::{CmdlineGlobMatcher, ProcessContext};
 
 /// LLM call classification: Main (normal), Recap (compaction/summary), WebSearch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum CallKind {
     Main,
     Recap,
@@ -20,6 +21,7 @@ pub(super) enum CallKind {
 }
 
 impl CallKind {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             CallKind::Main => "main",
@@ -33,6 +35,7 @@ impl CallKind {
 ///
 /// Conservative: unmatched → Main (zero false positives > recall).
 /// Signatures are from real captures (case-sensitive .contains()).
+#[allow(dead_code)]
 pub(super) fn classify_call_kind(request: &LLMRequest) -> CallKind {
     // Collect system instructions text
     let system_text: String = request
@@ -172,6 +175,65 @@ impl GenAIBuilder {
             .as_ref()
             .map(|b| b.contains("llmParamString"))
             .unwrap_or(false)
+    }
+
+    /// Normalize the messages array from a parsed request body.
+    ///
+    /// Supports both formats:
+    /// - OpenAI chat completions: top-level `"messages"` array.
+    /// - OpenAI Responses API (codex 0.137+ via dashscope `/v1/responses`):
+    ///   top-level `"input"` array with sibling `"instructions"` string.
+    ///
+    /// Returns `(messages_vec, instructions_text)` where `instructions_text`
+    /// is only set when the Responses API form is used (it serves as the
+    /// system prompt fallback when the messages array has no system role).
+    pub(super) fn extract_messages_view(
+        body: &serde_json::Value,
+    ) -> Option<(Vec<serde_json::Value>, Option<String>)> {
+        if let Some(arr) = body.get("messages").and_then(|m| m.as_array()) {
+            return Some((arr.clone(), None));
+        }
+        if let Some(arr) = body.get("input").and_then(|m| m.as_array()) {
+            let instructions = body
+                .get("instructions")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            return Some((arr.clone(), instructions));
+        }
+        None
+    }
+
+    /// Extract human-readable text from a message's `content` field.
+    ///
+    /// Supports:
+    /// - Plain string: `"content": "text"`.
+    /// - Array of content blocks with type `text` / `input_text` / `output_text`:
+    ///   `"content": [{"type":"input_text","text":"..."}]`.
+    pub(super) fn extract_message_text(message: &serde_json::Value) -> Option<String> {
+        let c = message.get("content")?;
+        if let Some(s) = c.as_str() {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+        if let Some(arr) = c.as_array() {
+            let text: String = arr
+                .iter()
+                .filter_map(|item| {
+                    let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if matches!(ty, "text" | "input_text" | "output_text") {
+                        item.get("text").and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        None
     }
 
     /// Extract provider from path

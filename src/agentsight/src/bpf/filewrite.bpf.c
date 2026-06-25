@@ -64,23 +64,34 @@ int BPF_PROG(trace_vfs_write, struct file *file, const char *buf, size_t count, 
     if (ret <= 0)
         return 0;
 
-    // ret includes the null terminator, so string length = ret - 1
-    // Filename must be exactly "<uuid>.jsonl" = 42 chars
-    int slen = ret - 1;
-    if (slen != UUID_JSONL_LEN)
-        return 0;
+    // We accept two filename shapes; both checks use only compile-time fixed
+    // offsets, so the eBPF verifier doesn't have to track dynamic length math.
+    //   1. `<UUID>.jsonl`              (exactly 42 chars + NUL = 43)
+    //                                  OpenClaw / Cosh / Claude Code
+    //   2. `rollout-<...>-<UUID>.jsonl`
+    //                                  Codex CLI rollouts; userspace
+    //                                  extracts the trailing UUID via
+    //                                  ResponseSessionMapper.
+    int matched_strict = (ret == UUID_JSONL_LEN + 1)
+        && fname[UUID_LEN]     == '.'
+        && fname[UUID_LEN + 1] == 'j'
+        && fname[UUID_LEN + 2] == 's'
+        && fname[UUID_LEN + 3] == 'o'
+        && fname[UUID_LEN + 4] == 'n'
+        && fname[UUID_LEN + 5] == 'l'
+        && is_uuid(fname);
 
-    // Compare last 6 characters against ".jsonl"
-    if (fname[UUID_LEN]     != '.' ||
-        fname[UUID_LEN + 1] != 'j' ||
-        fname[UUID_LEN + 2] != 's' ||
-        fname[UUID_LEN + 3] != 'o' ||
-        fname[UUID_LEN + 4] != 'n' ||
-        fname[UUID_LEN + 5] != 'l')
-        return 0;
+    int matched_rollout = (ret >= 9)
+        && fname[0] == 'r'
+        && fname[1] == 'o'
+        && fname[2] == 'l'
+        && fname[3] == 'l'
+        && fname[4] == 'o'
+        && fname[5] == 'u'
+        && fname[6] == 't'
+        && fname[7] == '-';
 
-    // Validate UUID portion of filename
-    if (!is_uuid(fname))
+    if (!matched_strict && !matched_rollout)
         return 0;
 
     // Reserve space in ring buffer
@@ -91,7 +102,12 @@ int BPF_PROG(trace_vfs_write, struct file *file, const char *buf, size_t count, 
     // Fill metadata
     event->source = EVENT_SOURCE_FILEWRITE;
     event->timestamp_ns = bpf_ktime_get_ns();
-    event->pid = current_ns_pid();
+    // Use the tgid-level ns pid so this event correlates with sslsniff
+    // (which also records the process-group pid). `pid_tgid >> 32` is the
+    // host tgid; the gate above already returned the corresponding ns pid
+    // when the lookup hit the traced map, but we want a consistent value
+    // for cross-probe correlation with the HTTP/SSE pipeline.
+    event->pid = pid;
     event->tid = (u32)pid_tgid;
     event->uid = bpf_get_current_uid_gid();
     event->write_size = (u32)count;

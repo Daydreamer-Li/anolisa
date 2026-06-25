@@ -98,12 +98,22 @@ impl ParsedSseEvent {
     /// Recognizes:
     /// - OpenAI style: data is `[DONE]` or `[END]`
     /// - Anthropic style: event field is `message_stop`, or data is `{"type":"message_stop"}`
+    /// - OpenAI Responses API: event field is `response.completed`/`response.failed`/`response.incomplete`,
+    ///   or data is `{"type":"response.completed",...}`.
     pub fn is_done(&self) -> bool {
         if self.is_synthetic_done {
             return true;
         }
         // Anthropic SSE: event field is "message_stop"
         if self.event.as_deref() == Some("message_stop") {
+            return true;
+        }
+        // OpenAI Responses API: event field flags a terminal frame.
+        // Use this even when the data payload is too large to parse as JSON.
+        if matches!(
+            self.event.as_deref(),
+            Some("response.completed") | Some("response.failed") | Some("response.incomplete")
+        ) {
             return true;
         }
         let data = self.data();

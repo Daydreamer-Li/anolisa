@@ -111,12 +111,17 @@ impl GenAIBuilder {
             };
 
             // Determine response_id from call metadata (may come from parsed_message
-            // or SSE body fallback), and check if mapper resolved it.
+            // or SSE body fallback), and check if mapper resolved it (either via
+            // response_id mapping, or via pid → session fallback for agents like
+            // Codex CLI whose rollout file does not embed a response_id).
             let response_id = llm_call.metadata.get("response_id").cloned();
             let mapper_hit = response_id
                 .as_deref()
                 .and_then(|rid| response_mapper.get_session_by_response_id(rid))
-                .is_some();
+                .is_some()
+                || response_mapper
+                    .get_session_by_pid(llm_call.pid as u32)
+                    .is_some();
 
             // If response_id exists but mapper didn't resolve session_id, queue
             // for deferred resolution so the next FileWrite event can fix it.
@@ -216,91 +221,60 @@ impl GenAIBuilder {
         // 重新计算并 UPDATE 正常 ID，只有 crash 路径才会保留这里写入的
         // peek/fallback 值。
         let (user_query, input_messages, system_instructions, first_user_text, last_user_text) =
-            if let Some(ref v) = body {
-                if let Some(messages) = v.get("messages").and_then(|m| m.as_array()) {
-                    // Helper: extract text from "content" which can be either
-                    // a plain string or an array of content blocks:
-                    //   "content": "text"
-                    //   "content": [{"type":"text","text":"..."},...]
-                    let extract_text = |m: &serde_json::Value| -> Option<String> {
-                        let c = m.get("content")?;
-                        if let Some(s) = c.as_str() {
-                            if !s.is_empty() {
-                                return Some(s.to_string());
-                            }
-                        }
-                        if let Some(arr) = c.as_array() {
-                            let text: String = arr
-                                .iter()
-                                .filter_map(|item| {
-                                    // [{"type":"text","text":"..."}]
-                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        item.get("text").and_then(|t| t.as_str())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            if !text.is_empty() {
-                                return Some(text);
-                            }
-                        }
-                        None
-                    };
+            if let Some(view) = body.as_ref().and_then(Self::extract_messages_view) {
+                let (messages, instructions_text) = view;
 
-                    // First user message raw text — used as `session_key` material
-                    // for IdResolver peek / crash fallback.
-                    let first_user_text = messages
-                        .iter()
-                        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-                        .find_map(&extract_text)
-                        .unwrap_or_default();
+                // First user message raw text — used as `session_key` material
+                // for IdResolver peek / crash fallback.
+                let first_user_text = messages
+                    .iter()
+                    .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                    .find_map(Self::extract_message_text)
+                    .unwrap_or_default();
 
-                    // Last user message raw text — used for user_query (display text)
-                    // 以及 conversation_key (peek / crash fallback)。
-                    let last_user_raw = messages
-                        .iter()
-                        .rev()
-                        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-                        .find_map(extract_text);
-                    let last_user_text = last_user_raw.clone().unwrap_or_default();
+                // Last user message raw text — used for user_query (display text)
+                // 以及 conversation_key (peek / crash fallback)。
+                let last_user_raw = messages
+                    .iter()
+                    .rev()
+                    .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                    .find_map(Self::extract_message_text);
+                let last_user_text = last_user_raw.clone().unwrap_or_default();
 
-                    // user_query: last user message text, stripped of metadata prefix
-                    let user_query = last_user_raw.as_deref().map(Self::strip_user_query_prefix);
+                // user_query: last user message text, stripped of metadata prefix
+                let user_query = last_user_raw.as_deref().map(Self::strip_user_query_prefix);
 
-                    // Serialise message subsets for the pending record
-                    let sys: Vec<_> = messages
-                        .iter()
-                        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
-                        .collect();
-                    let non_sys: Vec<_> = messages
-                        .iter()
-                        .filter(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))
-                        .collect();
+                // Serialise message subsets for the pending record
+                let sys: Vec<_> = messages
+                    .iter()
+                    .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+                    .collect();
+                let non_sys: Vec<_> = messages
+                    .iter()
+                    .filter(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))
+                    .collect();
 
-                    let input_messages = if non_sys.is_empty() {
-                        None
-                    } else {
-                        serde_json::to_string(&non_sys).ok()
-                    };
-                    let system_instructions = if sys.is_empty() {
-                        None
-                    } else {
-                        serde_json::to_string(&sys).ok()
-                    };
-
-                    (
-                        user_query,
-                        input_messages,
-                        system_instructions,
-                        first_user_text,
-                        last_user_text,
-                    )
+                let input_messages = if non_sys.is_empty() {
+                    None
                 } else {
-                    // messages key missing or not an array
-                    (None, None, None, String::new(), String::new())
-                }
+                    serde_json::to_string(&non_sys).ok()
+                };
+                let system_instructions = if sys.is_empty() {
+                    // Responses API carries the system prompt at the top level
+                    // via "instructions". Fall back to that when the messages
+                    // array has no system role.
+                    instructions_text.map(|s| serde_json::to_string(&s).unwrap_or(s))
+                } else {
+                    serde_json::to_string(&sys).ok()
+                };
+
+                (
+                    user_query,
+                    input_messages,
+                    system_instructions,
+                    first_user_text,
+                    last_user_text,
+                )
             } else {
                 (None, None, None, String::new(), String::new())
             };

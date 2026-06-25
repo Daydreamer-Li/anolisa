@@ -70,6 +70,31 @@ pub enum ConnectionState {
 #[derive(Debug)]
 pub struct HttpConnectionAggregator {
     connections: LruCache<ConnectionId, ConnectionState>,
+    /// Raw bytes received as RawData while the connection is in SseActive
+    /// state. Some providers (e.g. OpenAI Responses API via dashscope) emit
+    /// a final `response.completed` SSE event whose data payload spans
+    /// multiple TLS records: the first chunk parses as a SseEvent (with
+    /// truncated data), and subsequent chunks have no `data:` prefix so
+    /// they arrive as RawData. Buffering them lets us reconstruct the
+    /// original event for token-usage extraction when the stream ends.
+    sse_continuation_buffers: LruCache<ConnectionId, Vec<u8>>,
+    /// Last `source_event` pointer appended into the continuation buffer per
+    /// connection. Used to dedup when a single SSL_read produces multiple
+    /// ParsedSseEvents that share the same source SslEvent buffer.
+    last_appended_src_ptr: LruCache<ConnectionId, usize>,
+}
+
+/// Returns true if oversized-SSE-event continuation buffering should run for
+/// this SSE stream. Currently only the OpenAI Responses API
+/// (`/v1/responses`, dashscope `/compatible-mode/v1/responses`) emits a
+/// final `response.completed` event whose data field routinely spans
+/// multiple TLS records, so we restrict the extra buffering to that path.
+fn needs_sse_continuation_buffer(request: Option<&ParsedRequest>) -> bool {
+    let Some(req) = request else {
+        return false;
+    };
+    let path = req.path.as_str();
+    path.ends_with("/responses") || path.contains("/responses?") || path.contains("/v1/responses")
 }
 
 impl Default for HttpConnectionAggregator {
@@ -83,6 +108,12 @@ impl HttpConnectionAggregator {
     pub fn new() -> Self {
         HttpConnectionAggregator {
             connections: LruCache::new(NonZeroUsize::new(DEFAULT_CONNECTION_CAPACITY).unwrap()),
+            sse_continuation_buffers: LruCache::new(
+                NonZeroUsize::new(DEFAULT_CONNECTION_CAPACITY).unwrap(),
+            ),
+            last_appended_src_ptr: LruCache::new(
+                NonZeroUsize::new(DEFAULT_CONNECTION_CAPACITY).unwrap(),
+            ),
         }
     }
 
@@ -90,6 +121,8 @@ impl HttpConnectionAggregator {
     pub fn with_capacity(capacity: usize) -> Self {
         HttpConnectionAggregator {
             connections: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
+            sse_continuation_buffers: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
+            last_appended_src_ptr: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
         }
     }
 
@@ -578,7 +611,32 @@ impl HttpConnectionAggregator {
                 }
             }
             other => {
-                // Not in RequestBodyPending / compressed-SSE state, restore and ignore
+                // Not in RequestBodyPending / compressed-SSE state. If we are
+                // in an uncompressed SseActive stream targeting the OpenAI
+                // Responses API, buffer the bytes as a continuation of the
+                // last SSE event so we can recover token-usage from
+                // oversized events (e.g. `response.completed`) that span
+                // multiple TLS records. Other providers fit usage in a
+                // single small event, so skip the extra copy.
+                if let ConnectionState::SseActive {
+                    request,
+                    compressed_buffer: None,
+                    ..
+                } = &other
+                {
+                    if needs_sse_continuation_buffer(request.as_ref()) {
+                        const MAX_CONTINUATION_BYTES: usize = 1 << 20; // 1 MiB cap
+                        let data = &ssl_event.buf[..ssl_event.buf_size() as usize];
+                        let buf = self
+                            .sse_continuation_buffers
+                            .get_or_insert_mut(connection_id, Vec::new);
+                        let remaining = MAX_CONTINUATION_BYTES.saturating_sub(buf.len());
+                        let take = data.len().min(remaining);
+                        if take > 0 {
+                            buf.extend_from_slice(&data[..take]);
+                        }
+                    }
+                }
                 self.insert(connection_id, other);
                 None
             }
@@ -630,9 +688,39 @@ impl HttpConnectionAggregator {
                 // Check if stream is done before processing
                 let is_done = sse_event.is_done();
 
-                log::trace!(
-                    "[HttpAggregator] SSE event in SseActive | conn={connection_id:?} | is_done={is_done}",
+                log::debug!(
+                    "[HttpAggregator] SSE event in SseActive | conn={connection_id:?} | is_done={is_done} | event={:?} | data_len={}",
+                    sse_event.event,
+                    sse_event.data_len(),
                 );
+
+                // Append the underlying SSL chunk bytes to the continuation
+                // buffer so that oversized events (whose first chunk arrives
+                // here with truncated data) can still be reconstructed by
+                // downstream extractors. Only enable for the OpenAI
+                // Responses API — other providers emit usage in single
+                // small events. Dedup by source_event pointer so a single
+                // SSL_read producing multiple SSE events contributes only
+                // once.
+                if needs_sse_continuation_buffer(request.as_ref()) {
+                    const MAX_CONTINUATION_BYTES: usize = 1 << 20; // 1 MiB cap
+                    let src = sse_event.source_event();
+                    let src_ptr = src as *const _ as usize;
+                    let src_buf_len = src.buf_size() as usize;
+                    let last_ptr = self.last_appended_src_ptr.get(connection_id).copied();
+                    if last_ptr != Some(src_ptr) && src_buf_len > 0 && src_buf_len <= src.buf.len()
+                    {
+                        let buf = self
+                            .sse_continuation_buffers
+                            .get_or_insert_mut(*connection_id, Vec::new);
+                        let remaining = MAX_CONTINUATION_BYTES.saturating_sub(buf.len());
+                        let take = src_buf_len.min(remaining);
+                        if take > 0 {
+                            buf.extend_from_slice(&src.buf[..take]);
+                        }
+                        self.last_appended_src_ptr.put(*connection_id, src_ptr);
+                    }
+                }
 
                 // Add SSE event to the list
                 sse_events.push(sse_event);
@@ -645,6 +733,9 @@ impl HttpConnectionAggregator {
                     // Build aggregated response with SSE events
                     let mut response = AggregatedResponse::from_parsed(response_headers);
                     response.set_sse_events(sse_events);
+                    response.sse_continuation_bytes =
+                        self.sse_continuation_buffers.pop(connection_id);
+                    self.last_appended_src_ptr.pop(connection_id);
 
                     // Return appropriate result based on whether request exists
                     if let Some(req) = request {

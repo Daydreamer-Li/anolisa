@@ -18,78 +18,89 @@ impl GenAIBuilder {
         let v: serde_json::Value = serde_json::from_str(body).ok()?;
         let obj = v.as_object()?;
 
-        // 解析 messages 数组
-        let messages = obj
-            .get("messages")
-            .and_then(|m| m.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|msg| {
-                        let role = msg.get("role")?.as_str()?.to_string();
-                        let mut parts = Vec::new();
+        // Normalized view: "messages" (chat completions) or "input" + "instructions"
+        // (Responses API used by codex 0.137+ via dashscope /v1/responses).
+        let (raw_messages, instructions_text) = Self::extract_messages_view(&v)?;
 
-                        // content 可以是字符串或数组
-                        if let Some(content) = msg.get("content") {
-                            if let Some(s) = content.as_str() {
-                                if !s.is_empty() {
-                                    parts.push(MessagePart::Text {
-                                        content: s.to_string(),
-                                    });
-                                }
-                            } else if let Some(arr) = content.as_array() {
-                                for item in arr {
-                                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                        parts.push(MessagePart::Text {
-                                            content: text.to_string(),
-                                        });
-                                    }
-                                }
-                            }
+        let mut messages: Vec<InputMessage> = Vec::new();
+
+        // Responses API: prepend top-level "instructions" as a synthetic system message
+        if let Some(instr) = instructions_text {
+            if !instr.is_empty() {
+                messages.push(InputMessage {
+                    role: "system".to_string(),
+                    parts: vec![MessagePart::Text { content: instr }],
+                    name: None,
+                });
+            }
+        }
+
+        for msg in &raw_messages {
+            let Some(role) = msg.get("role").and_then(|v| v.as_str()).map(String::from) else {
+                continue;
+            };
+            let mut parts = Vec::new();
+
+            // content can be string or array of blocks. Accept blocks with a
+            // "text" field regardless of type (handles "text" / "input_text" /
+            // "output_text" alike).
+            if let Some(content) = msg.get("content") {
+                if let Some(s) = content.as_str() {
+                    if !s.is_empty() {
+                        parts.push(MessagePart::Text {
+                            content: s.to_string(),
+                        });
+                    }
+                } else if let Some(arr) = content.as_array() {
+                    for item in arr {
+                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                            parts.push(MessagePart::Text {
+                                content: text.to_string(),
+                            });
                         }
+                    }
+                }
+            }
 
-                        // tool_call 结果 (role=tool)
-                        if role == "tool" {
-                            if let Some(content) = msg.get("content") {
-                                let id = msg
-                                    .get("tool_call_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                                parts = vec![MessagePart::ToolCallResponse {
-                                    id,
-                                    response: content.clone(),
-                                }];
-                            }
-                        }
+            // tool_call 结果 (role=tool)
+            if role == "tool" {
+                if let Some(content) = msg.get("content") {
+                    let id = msg
+                        .get("tool_call_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    parts = vec![MessagePart::ToolCallResponse {
+                        id,
+                        response: content.clone(),
+                    }];
+                }
+            }
 
-                        // tool_calls (role=assistant 发起的 tool calls)
-                        if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-                            for tc in tool_calls {
-                                let id =
-                                    tc.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let func = tc.get("function").unwrap_or(&serde_json::Value::Null);
-                                let name = func
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let arguments = func.get("arguments").cloned();
-                                parts.push(MessagePart::ToolCall {
-                                    id,
-                                    name,
-                                    arguments,
-                                });
-                            }
-                        }
+            // tool_calls (role=assistant 发起的 tool calls)
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in tool_calls {
+                    let id = tc.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let func = tc.get("function").unwrap_or(&serde_json::Value::Null);
+                    let name = func
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = func.get("arguments").cloned();
+                    parts.push(MessagePart::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    });
+                }
+            }
 
-                        Some(InputMessage {
-                            role,
-                            parts,
-                            name: None,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            messages.push(InputMessage {
+                role,
+                parts,
+                name: None,
+            });
+        }
 
         if messages.is_empty() {
             return None;
