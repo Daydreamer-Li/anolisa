@@ -7,6 +7,11 @@ const NT_GNU_BUILD_ID: u32 = 3;
 
 /// Parse GNU Build-ID from an ELF binary's PT_NOTE segment.
 /// Returns the hex-encoded build-id string, or None if not present.
+///
+/// **ELF64 only.** 32-bit ELF (`class == 1`) is rejected early because
+/// Codex CLI ships as a statically-linked musl x86-64 binary. If 32-bit
+/// support is ever needed, the header layout and pointer-sized fields
+/// (e_phoff, p_offset, p_filesz) must be read as u32 instead of u64.
 pub fn read_buildid(path: &str) -> Option<String> {
     let mut f = File::open(path).ok()?;
     let mut ident = [0u8; 16];

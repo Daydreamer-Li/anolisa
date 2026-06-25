@@ -67,17 +67,18 @@ def read_buildid(path: str) -> Optional[str]:
 def detect_codex_version(path: str) -> Optional[str]:
     # Codex embeds its version in the binary as `codex-cli <ver>` or
     # `rust-v<ver>`; either is acceptable for the human-readable label.
+    # Read in 1 MiB chunks to avoid loading the entire ~276 MB binary.
     patterns = (r"codex-cli (\d+\.\d+\.\d+)", r"rust-v(\d+\.\d+\.\d+)")
     try:
         with open(path, "rb") as f:
-            data = f.read()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                text = chunk.decode("utf-8", errors="ignore")
+                for pat in patterns:
+                    m = re.search(pat, text)
+                    if m:
+                        return m.group(1)
     except OSError:
         return None
-    text = data.decode("utf-8", errors="ignore")
-    for pat in patterns:
-        m = re.search(pat, text)
-        if m:
-            return m.group(1)
     return None
 
 

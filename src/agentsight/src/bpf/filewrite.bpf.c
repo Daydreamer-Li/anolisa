@@ -72,6 +72,13 @@ int BPF_PROG(trace_vfs_write, struct file *file, const char *buf, size_t count, 
     //                                  Codex CLI rollouts; userspace
     //                                  extracts the trailing UUID via
     //                                  ResponseSessionMapper.
+    //
+    // The rollout check is intentionally a *prefix* match (`rollout-`)
+    // without verifying the `.jsonl` suffix: the eBPF verifier rejects
+    // variable-length suffix checks, and the userspace
+    // `extract_session_id` performs precise filtering. The extra ring
+    // buffer events from non-jsonl `rollout-*` files are negligible
+    // because such files are rare outside Codex's own session directory.
     int matched_strict = (ret == UUID_JSONL_LEN + 1)
         && fname[UUID_LEN]     == '.'
         && fname[UUID_LEN + 1] == 'j'
