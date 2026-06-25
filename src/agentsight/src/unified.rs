@@ -1250,9 +1250,34 @@ impl AgentSight {
         )> = Vec::new();
 
         for (conn_id, state) in drained {
-            // Destructure to capture both request AND sse_events
+            // Destructure to capture both request AND sse_events.
+            // For compressed SSE streams that were still in progress when the
+            // process died (sse_events empty, compressed_buffer non-empty),
+            // decode the buffer here so token-usage data is not lost (#973).
             let (_state_name, request, sse_events) = match state {
                 ConnectionState::RequestPending { request } => ("RequestPending", request, vec![]),
+                ConnectionState::SseActive {
+                    request: Some(req),
+                    sse_events,
+                    compressed_buffer: Some(buf),
+                    content_encoding,
+                    response_headers,
+                } if sse_events.is_empty() && !buf.is_empty() => {
+                    // fix(#973): decode the unfinalized compressed buffer
+                    // so drain-path token extraction can proceed.
+                    let is_chunked =
+                        crate::aggregator::HttpConnectionAggregator::is_chunked_response(
+                            &response_headers,
+                        );
+                    let decoded =
+                        crate::aggregator::HttpConnectionAggregator::decode_compressed_sse(
+                            &buf,
+                            content_encoding.as_deref(),
+                            is_chunked,
+                            &response_headers.source_event,
+                        );
+                    ("SseActive", req, decoded)
+                }
                 ConnectionState::SseActive {
                     request: Some(req),
                     sse_events,
