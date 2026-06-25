@@ -403,15 +403,29 @@ impl SslSniff {
 
     /// Detach SSL probes for a process and clean up traced inodes.
     ///
-    /// When a process exits, its inodes are removed from `traced_files` so that
-    /// a new process using the same binary can be re-attached.
+    /// When a process exits, its inodes are removed from `traced_files` **only
+    /// if no other traced pid still references the same inode**.  Uprobes are
+    /// attached globally (`pid=-1`), so the link remains valid for other
+    /// processes using the same library; removing the inode prematurely would
+    /// cause the scanner to re-attach on the next sweep, producing duplicate
+    /// uprobe fds.
     pub fn detach_process(&mut self, pid: u32) {
         if let Some(inodes) = self.pid_inodes.remove(&pid) {
+            let mut removed = 0;
             for inode in &inodes {
-                self.traced_files.remove(inode);
+                // Check whether another pid still maps this inode.
+                let still_used = self
+                    .pid_inodes
+                    .values()
+                    .any(|other_inodes| other_inodes.contains(inode));
+                if !still_used {
+                    self.traced_files.remove(inode);
+                    removed += 1;
+                }
             }
             log::debug!(
-                "[detach_process] pid={pid}: removed {} inodes from traced_files",
+                "[detach_process] pid={pid}: removed {}/{} inodes from traced_files",
+                removed,
                 inodes.len()
             );
         }
@@ -751,6 +765,15 @@ fn ssl_libs_from_maps(pid: i32) -> Result<Vec<(String, u64, SslLibKind)>> {
             // When the backing file has been unlinked (" (deleted)" in maps),
             // the filesystem path no longer exists.  Fall back to /proc/<pid>/exe
             // which the kernel keeps accessible as long as the process is alive.
+            //
+            // For normal paths we prefix with `/proc/<pid>/root` so that the
+            // uprobe target resolves through the process's own mount namespace.
+            // This is intentional: `canonicalize()` would resolve overlayfs
+            // paths to the host's lower/upper dirs, which libbpf cannot always
+            // map back to an inode for uprobe attachment.  The kernel's uprobe
+            // mechanism natively understands `/proc/<pid>/root/<path>` because
+            // it follows the process's mount namespace, making this safe for
+            // both host and container processes.
             let path_str = if path_str.ends_with(" (deleted)") {
                 format!("/proc/{pid}/exe")
             } else {
