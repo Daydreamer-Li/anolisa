@@ -128,7 +128,11 @@ impl ParsedSseEvent {
         if trimmed.starts_with('{') {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 let t = v.get("type").and_then(|t| t.as_str());
-                if t == Some("message_stop") || t == Some("response.completed") {
+                if t == Some("message_stop")
+                    || t == Some("response.completed")
+                    || t == Some("response.failed")
+                    || t == Some("response.incomplete")
+                {
                     return true;
                 }
             }
@@ -542,6 +546,22 @@ mod tests {
     #[test]
     fn test_is_done_responses_api_completed() {
         let data = b"{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\"}}";
+        let ev = make_event(data);
+        let parsed = ParsedSseEvent::new(None, None, None, 0, data.len(), ev);
+        assert!(parsed.is_done());
+    }
+
+    #[test]
+    fn test_is_done_responses_api_failed() {
+        let data = b"{\"type\":\"response.failed\"}";
+        let ev = make_event(data);
+        let parsed = ParsedSseEvent::new(None, None, None, 0, data.len(), ev);
+        assert!(parsed.is_done());
+    }
+
+    #[test]
+    fn test_is_done_responses_api_incomplete() {
+        let data = b"{\"type\":\"response.incomplete\"}";
         let ev = make_event(data);
         let parsed = ParsedSseEvent::new(None, None, None, 0, data.len(), ev);
         assert!(parsed.is_done());

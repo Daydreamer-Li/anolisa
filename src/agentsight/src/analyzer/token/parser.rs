@@ -360,4 +360,39 @@ data:{"sequence_number":10,"type":"response.completed","response":{"usage":{"tot
         let parser = TokenParser::new();
         assert!(parser.parse_data(data).is_none());
     }
+
+    #[test]
+    fn test_scan_partial_usage_only_input() {
+        // Truncated JSON forces the regex-free string-scan fallback.
+        let data = r#"{"input_tokens": 42"#;
+        let parser = TokenParser::new();
+        let usage = parser.parse_data(data).expect("should parse input only");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_scan_partial_usage_only_output() {
+        let data = r#"{"output_tokens": 7"#;
+        let parser = TokenParser::new();
+        let usage = parser.parse_data(data).expect("should parse output only");
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 7);
+    }
+
+    #[test]
+    fn test_scan_partial_usage_prompt_completion_aliases() {
+        let data = r#"{"prompt_tokens": 10, "completion_tokens": 5"#;
+        let parser = TokenParser::new();
+        let usage = parser.parse_data(data).expect("should parse aliases");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 5);
+    }
+
+    #[test]
+    fn test_scan_partial_usage_invalid_value_none() {
+        let data = r#"{"input_tokens": "not a number"}"#;
+        let parser = TokenParser::new();
+        assert!(parser.parse_data(data).is_none());
+    }
 }

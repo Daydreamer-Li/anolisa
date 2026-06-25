@@ -386,4 +386,117 @@ mod tests {
         });
         assert!(extract_response_content(Some(&chunk)).is_none());
     }
+
+    #[test]
+    fn test_responses_api_reasoning_text_delta() {
+        let chunk = serde_json::json!({
+            "type": "response.reasoning_text.delta",
+            "delta": "thinking...",
+        });
+        let (content, reasoning, tools) =
+            extract_response_content(Some(&chunk)).expect("should extract reasoning");
+        assert!(content.is_empty());
+        assert_eq!(reasoning, Some("thinking...".to_string()));
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_responses_api_reasoning_summary_text_delta() {
+        let chunk = serde_json::json!({
+            "type": "response.reasoning_summary_text.delta",
+            "delta": "summary...",
+        });
+        let (content, reasoning, tools) =
+            extract_response_content(Some(&chunk)).expect("should extract reasoning summary");
+        assert!(content.is_empty());
+        assert_eq!(reasoning, Some("summary...".to_string()));
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_responses_api_output_text_delta_empty() {
+        let chunk = serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "",
+        });
+        assert!(extract_response_content(Some(&chunk)).is_none());
+    }
+
+    #[test]
+    fn test_responses_api_output_text_done_empty() {
+        let chunk = serde_json::json!({
+            "type": "response.output_text.done",
+            "text": "",
+        });
+        assert!(extract_response_content(Some(&chunk)).is_none());
+    }
+
+    #[test]
+    fn test_responses_api_output_item_done_empty() {
+        let chunk = serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+            },
+        });
+        assert!(extract_response_content(Some(&chunk)).is_none());
+    }
+
+    #[test]
+    fn test_extract_response_with_tool_calls() {
+        let response = serde_json::json!({
+            "model": "gpt-4",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "tc_1",
+                        "function": {"name": "search", "arguments": "{\"q\":\"rust\"}"}
+                    }]
+                }
+            }]
+        });
+        let token_data = extract_token_data(None, Some(&response)).unwrap();
+        assert_eq!(token_data.tool_calls.len(), 1);
+        assert!(token_data.tool_calls[0].contains("search"));
+    }
+
+    #[test]
+    fn test_extract_sse_reasoning_content_accumulation() {
+        let chunk = serde_json::json!({
+            "model": "qwen",
+            "choices": [
+                {"delta": {"content": "a", "reasoning_content": "think1"}},
+                {"delta": {"content": "b", "reasoning_content": "think2"}}
+            ]
+        });
+        let (content, reasoning, _) =
+            extract_response_content(Some(&chunk)).expect("should extract");
+        assert_eq!(content, "ab");
+        assert_eq!(reasoning, Some("think1think2".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tool_calls_skips_missing_function() {
+        let response = serde_json::json!({
+            "model": "gpt-4",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "tool_calls": [{"id": "tc_1"}]
+                }
+            }]
+        });
+        let (content, _, tool_calls) =
+            extract_response_content(Some(&response)).expect("should extract content");
+        assert_eq!(content, "answer");
+        assert!(
+            tool_calls.is_empty(),
+            "tool_call without function should be skipped"
+        );
+    }
 }

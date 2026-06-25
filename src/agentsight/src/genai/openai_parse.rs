@@ -513,6 +513,64 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_request_body_responses_api() {
+        let body = r#"{
+            "model": "gpt-4",
+            "input": [{"role": "user", "content": "Hello"}],
+            "instructions": "You are helpful.",
+            "stream": true
+        }"#;
+        let req = GenAIBuilder::parse_request_body(body).unwrap();
+        assert_eq!(req.messages.len(), 2);
+        assert_eq!(req.messages[0].role, "system");
+        assert_eq!(req.messages[1].role, "user");
+        assert!(req.stream);
+    }
+
+    #[test]
+    fn test_parse_request_body_responses_api_empty_instructions() {
+        let body = r#"{
+            "model": "gpt-4",
+            "input": [{"role": "user", "content": "Hello"}],
+            "instructions": "",
+            "stream": true
+        }"#;
+        let req = GenAIBuilder::parse_request_body(body).unwrap();
+        // Empty instructions should be skipped, so only the input message remains.
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+    }
+
+    #[test]
+    fn test_parse_request_body_content_array() {
+        let body = r#"{
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
+            ]
+        }"#;
+        let req = GenAIBuilder::parse_request_body(body).unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert!(
+            matches!(&req.messages[0].parts[0], MessagePart::Text { content } if content == "Hello")
+        );
+    }
+
+    #[test]
+    fn test_parse_request_body_skips_missing_role() {
+        let body = r#"{
+            "model": "gpt-4",
+            "messages": [
+                {"content": "no role"},
+                {"role": "user", "content": "Hello"}
+            ]
+        }"#;
+        let req = GenAIBuilder::parse_request_body(body).unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+    }
+
+    #[test]
     fn test_parse_request_body_empty_messages() {
         let body = r#"{"model": "gpt-4", "messages": []}"#;
         assert!(GenAIBuilder::parse_request_body(body).is_none());

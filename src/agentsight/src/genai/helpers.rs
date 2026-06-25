@@ -923,4 +923,90 @@ mod tests {
         );
         assert_eq!(builder.extract_model_from_message(&None), None);
     }
+
+    #[test]
+    fn test_extract_messages_view_chat_completions() {
+        let body = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let (msgs, instructions) = GenAIBuilder::extract_messages_view(&body).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(instructions.is_none());
+    }
+
+    #[test]
+    fn test_extract_messages_view_responses_api() {
+        let body = serde_json::json!({
+            "model": "gpt-4",
+            "input": [{"role": "user", "content": "hi"}],
+            "instructions": "sys prompt"
+        });
+        let (msgs, instructions) = GenAIBuilder::extract_messages_view(&body).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(instructions.as_deref(), Some("sys prompt"));
+    }
+
+    #[test]
+    fn test_extract_messages_view_none() {
+        let body = serde_json::json!({"model": "gpt-4"});
+        assert!(GenAIBuilder::extract_messages_view(&body).is_none());
+    }
+
+    #[test]
+    fn test_extract_messages_view_responses_api_without_instructions() {
+        let body = serde_json::json!({
+            "model": "gpt-4",
+            "input": [{"role": "user", "content": "hi"}]
+        });
+        let (msgs, instructions) = GenAIBuilder::extract_messages_view(&body).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(instructions.is_none());
+    }
+
+    #[test]
+    fn test_extract_message_text_string() {
+        let msg = serde_json::json!({"role": "user", "content": "hello"});
+        assert_eq!(
+            GenAIBuilder::extract_message_text(&msg),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_message_text_array() {
+        let msg = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "hello"},
+                {"type": "output_text", "text": "world"},
+                {"type": "image", "text": "ignored"}
+            ]
+        });
+        assert_eq!(
+            GenAIBuilder::extract_message_text(&msg),
+            Some("hello\nworld".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_message_text_empty() {
+        let msg = serde_json::json!({"role": "user", "content": ""});
+        assert_eq!(GenAIBuilder::extract_message_text(&msg), None);
+    }
+
+    #[test]
+    fn test_extract_message_text_array_non_text_only() {
+        let msg = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "image", "text": "ignored"},
+                {"type": "image_url", "image_url": {"url": "http://example.com"}}
+            ]
+        });
+        assert_eq!(GenAIBuilder::extract_message_text(&msg), None);
+    }
 }

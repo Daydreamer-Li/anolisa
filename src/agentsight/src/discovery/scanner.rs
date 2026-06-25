@@ -380,4 +380,12 @@ mod tests {
         assert!(scanner.is_denied(&["deny-me-process".to_string()]));
         assert!(!scanner.is_denied(&["node".to_string(), "/path/claude-code".to_string()]));
     }
+
+    #[test]
+    fn test_try_match_process_current() {
+        let scanner = AgentScanner::from_rules(&crate::config::default_cmdline_rules(), &[]);
+        // The current test process should not match any agent rule.
+        let result = scanner.try_match_process(std::process::id());
+        assert!(result.is_none());
+    }
 }

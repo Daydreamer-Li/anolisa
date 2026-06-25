@@ -470,6 +470,36 @@ impl GenAIBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probes::sslsniff::SslEvent;
+    use std::rc::Rc;
+
+    fn make_request(path: &str, body: &str) -> ParsedRequest {
+        let buf = body.as_bytes().to_vec();
+        let ssl_event = Rc::new(SslEvent {
+            source: 0,
+            timestamp_ns: 1000,
+            delta_ns: 0,
+            pid: 1234,
+            tid: 1,
+            uid: 0,
+            len: buf.len() as u32,
+            rw: 1,
+            comm: "test".to_string(),
+            buf,
+            is_handshake: false,
+            ssl_ptr: 0x1,
+        });
+        ParsedRequest {
+            method: "POST".to_string(),
+            path: path.to_string(),
+            version: 11,
+            headers: std::collections::HashMap::new(),
+            body_offset: 0,
+            body_len: body.len(),
+            source_event: ssl_event,
+            reassembled_body: None,
+        }
+    }
 
     #[test]
     fn test_generate_id_unique() {
@@ -490,5 +520,65 @@ mod tests {
         let id2 = b2.generate_id();
         assert!(id1.contains('_'));
         assert!(id2.contains('_'));
+    }
+
+    #[test]
+    fn test_build_pending_from_request_chat_completions() {
+        let builder = GenAIBuilder::new();
+        let body = r#"{"model":"gpt-4","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hello"}]}"#;
+        let req = make_request("/v1/chat/completions", body);
+        let cache = std::collections::HashMap::new();
+        let pending = builder
+            .build_pending_from_request(&req, &ConnectionId { pid: 1, ssl_ptr: 2 }, &cache)
+            .unwrap();
+        assert_eq!(pending.model.as_deref(), Some("gpt-4"));
+        assert_eq!(pending.provider.as_deref(), Some("openai"));
+        assert!(pending.system_instructions.is_some());
+        assert!(pending.user_query.as_deref() == Some("hello"));
+        assert_eq!(pending.call_kind, "main");
+    }
+
+    #[test]
+    fn test_build_pending_from_request_responses_api() {
+        let builder = GenAIBuilder::new();
+        let body = r#"{"model":"gpt-4","input":[{"role":"user","content":"hello"}],"instructions":"sys prompt"}"#;
+        let req = make_request("/v1/responses", body);
+        let cache = std::collections::HashMap::new();
+        let pending = builder
+            .build_pending_from_request(&req, &ConnectionId { pid: 1, ssl_ptr: 2 }, &cache)
+            .unwrap();
+        assert_eq!(pending.model.as_deref(), Some("gpt-4"));
+        assert_eq!(pending.provider.as_deref(), Some("openai"));
+        assert!(pending.system_instructions.is_some());
+        assert!(pending.user_query.as_deref() == Some("hello"));
+    }
+
+    #[test]
+    fn test_build_pending_from_request_non_llm_path() {
+        let builder = GenAIBuilder::new();
+        let body = r#"{"model":"gpt-4","messages":[]}"#;
+        let req = make_request("/api/health", body);
+        let cache = std::collections::HashMap::new();
+        assert!(
+            builder
+                .build_pending_from_request(&req, &ConnectionId { pid: 1, ssl_ptr: 2 }, &cache)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_build_pending_from_request_llm_path_no_messages_view() {
+        let builder = GenAIBuilder::new();
+        // LLM path but body lacks both "messages" and "input".
+        let body = r#"{"model":"gpt-4","stream":true}"#;
+        let req = make_request("/v1/chat/completions", body);
+        let cache = std::collections::HashMap::new();
+        let pending = builder
+            .build_pending_from_request(&req, &ConnectionId { pid: 1, ssl_ptr: 2 }, &cache)
+            .expect("LLM path should still create pending even without messages");
+        assert_eq!(pending.model.as_deref(), Some("gpt-4"));
+        assert!(pending.user_query.is_none());
+        assert!(pending.input_messages.is_none());
+        assert!(pending.system_instructions.is_none());
     }
 }

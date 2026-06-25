@@ -2024,4 +2024,112 @@ mod tests {
             other => panic!("expected ResponseOnly, got {other:?}"),
         }
     }
+
+    // ── OpenAI Responses API SSE continuation buffer tests ───────────────
+
+    #[test]
+    fn test_with_capacity_creates_continuation_buffers() {
+        let aggregator = HttpConnectionAggregator::with_capacity(4);
+        assert_eq!(aggregator.active_connections(), 0);
+    }
+
+    #[test]
+    fn test_needs_sse_continuation_buffer_none_request() {
+        assert!(!needs_sse_continuation_buffer(None));
+    }
+
+    fn enter_uncompressed_responses_sse_active(
+        aggregator: &mut HttpConnectionAggregator,
+        pid: u32,
+        ssl_ptr: u64,
+    ) -> ConnectionId {
+        let req_event = create_mock_ssl_event_with_buf(pid, ssl_ptr, Vec::new(), 1);
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            version: 11,
+            headers: HashMap::new(),
+            body_offset: 0,
+            body_len: 0,
+            source_event: req_event,
+            reassembled_body: None,
+        };
+        aggregator.process_request(request);
+
+        let resp_event = create_mock_ssl_event_with_buf(pid, ssl_ptr, Vec::new(), 0);
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "text/event-stream".to_string());
+        let response = ParsedResponse {
+            version: 11,
+            status_code: 200,
+            reason: "OK".to_string(),
+            headers,
+            body_offset: 0,
+            body_len: 0,
+            source_event: resp_event,
+        };
+        aggregator.process_response(response);
+        ConnectionId { pid, ssl_ptr }
+    }
+
+    #[test]
+    fn test_sse_continuation_buffer_in_process_raw_body_data() {
+        let mut aggregator = HttpConnectionAggregator::new();
+        let conn_id = enter_uncompressed_responses_sse_active(&mut aggregator, 20, 0xA000);
+        assert!(aggregator.is_sse_active(&conn_id));
+
+        let chunk = b"event:response.completed\ndata:{\"usage\":{\"input_tokens\":57";
+        let raw = create_mock_ssl_event_with_buf(20, 0xA000, chunk.to_vec(), 0);
+        let result = aggregator.process_raw_body_data(&raw);
+        assert!(
+            result.is_none(),
+            "raw body data on SseActive should keep buffering"
+        );
+
+        // Complete the stream and inspect the continuation buffer captured.
+        let done_event =
+            create_mock_ssl_event_with_buf(20, 0xA000, b"data: [DONE]\n\n".to_vec(), 0);
+        let done = ParsedSseEvent::new(None, None, None, 6, 6, done_event);
+        let result = aggregator.process_sse_event(&conn_id, done);
+        let pair = match result {
+            Some(AggregatedResult::SseComplete(pair)) => pair,
+            other => panic!("expected SseComplete, got {other:?}"),
+        };
+        let buf = pair
+            .response
+            .sse_continuation_bytes
+            .expect("continuation buffer should be present");
+        assert!(buf.windows(chunk.len()).any(|w| w == chunk));
+    }
+
+    #[test]
+    fn test_sse_continuation_buffer_in_process_sse_event() {
+        let mut aggregator = HttpConnectionAggregator::new();
+        let conn_id = enter_uncompressed_responses_sse_active(&mut aggregator, 21, 0xB000);
+
+        // Build an SSE event whose underlying SSL buffer carries extra bytes.
+        let payload = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
+        let src_event = create_mock_ssl_event_with_buf(21, 0xB000, payload.to_vec(), 0);
+        let event = ParsedSseEvent::new(None, None, None, 0, payload.len(), src_event);
+        let result = aggregator.process_sse_event(&conn_id, event);
+        assert!(
+            result.is_none(),
+            "non-terminal SSE event should keep streaming"
+        );
+
+        // Complete the stream and verify the source buffer was appended.
+        let done_event =
+            create_mock_ssl_event_with_buf(21, 0xB000, b"data: [DONE]\n\n".to_vec(), 0);
+        let done = ParsedSseEvent::new(None, None, None, 6, 6, done_event);
+        let result = aggregator.process_sse_event(&conn_id, done);
+        let pair = match result {
+            Some(AggregatedResult::SseComplete(pair)) => pair,
+            other => panic!("expected SseComplete, got {other:?}"),
+        };
+        let buf = pair
+            .response
+            .sse_continuation_bytes
+            .expect("continuation buffer should be populated");
+        assert!(buf.windows(payload.len()).any(|w| w == payload));
+    }
 }

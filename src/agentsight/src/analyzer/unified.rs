@@ -1258,6 +1258,26 @@ impl Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probes::sslsniff::SslEvent;
+    use std::rc::Rc;
+
+    fn create_test_event(data: &str) -> ParsedSseEvent {
+        let ssl_event = Rc::new(SslEvent {
+            source: 0,
+            timestamp_ns: 1234567890,
+            delta_ns: 0,
+            pid: 1234,
+            tid: 5678,
+            uid: 0,
+            len: data.len() as u32,
+            rw: 0,
+            comm: String::new(),
+            buf: data.as_bytes().to_vec(),
+            is_handshake: false,
+            ssl_ptr: 0,
+        });
+        ParsedSseEvent::new(None, None, None, 0, data.len(), ssl_event)
+    }
 
     #[test]
     fn test_extract_token_from_json_body_openai() {
@@ -1428,5 +1448,110 @@ mod tests {
                 .extract_token_from_json_body(Some(&json), 1234, "test")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_extract_token_from_sse_continuation_buffer() {
+        let analyzer = Analyzer::new();
+        let events = vec![create_test_event(
+            "data: {\"type\":\"response.output_text.delta\"}",
+        )];
+        let continuation = br#"event:response.completed
+data:{"usage":{"input_tokens":57,"output_tokens":3}}"#;
+        let record = analyzer
+            .extract_token_from_sse(&events, Some(continuation), 1234, "test")
+            .expect("should recover from continuation buffer");
+        assert_eq!(record.input_tokens, 57);
+        assert_eq!(record.output_tokens, 3);
+    }
+
+    #[test]
+    fn test_extract_token_from_sse_events_only_no_usage() {
+        let analyzer = Analyzer::new();
+        let events = vec![create_test_event(
+            "data: {\"type\":\"response.output_text.delta\"}",
+        )];
+        assert!(
+            analyzer
+                .extract_token_from_sse(&events, None, 1234, "test")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_extract_token_from_sse_continuation_buffer_scan_fallback() {
+        let analyzer = Analyzer::new();
+        let events = vec![create_test_event(
+            "data: {\"type\":\"response.output_text.delta\"}",
+        )];
+        // Truncated JSON that is neither valid JSON nor well-formed SSE, but
+        // still carries token fields. This exercises the regex-free scan
+        // fallback (lines 633-642).
+        let continuation = b"{\"input_tokens\":57,\"output_tokens\":3";
+        let record = analyzer
+            .extract_token_from_sse(&events, Some(continuation), 1234, "test")
+            .expect("should recover via partial scan");
+        assert_eq!(record.input_tokens, 57);
+        assert_eq!(record.output_tokens, 3);
+    }
+
+    #[test]
+    fn test_analyze_aggregated_response_only_with_sse() {
+        use crate::aggregator::{AggregatedResponse, ConnectionId};
+        use crate::parser::http::ParsedResponse;
+
+        let analyzer = Analyzer::new();
+
+        let resp_buf = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+        let ssl_event = Rc::new(SslEvent {
+            source: 0,
+            timestamp_ns: 1_000_000_000,
+            delta_ns: 0,
+            pid: 3000,
+            tid: 3000,
+            uid: 0,
+            len: resp_buf.len() as u32,
+            rw: 0,
+            comm: "python3".to_string(),
+            buf: resp_buf.to_vec(),
+            is_handshake: false,
+            ssl_ptr: 0x9000,
+        });
+
+        let parsed_response = ParsedResponse {
+            version: 11,
+            status_code: 200,
+            reason: "OK".to_string(),
+            headers: std::collections::HashMap::new(),
+            body_offset: 0,
+            body_len: 0,
+            source_event: ssl_event,
+        };
+
+        let mut aggregated_response = AggregatedResponse::from_parsed(parsed_response);
+        let usage_event =
+            create_test_event("data: {\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}");
+        aggregated_response.set_sse_events(vec![usage_event]);
+
+        let result = AggregatedResult::ResponseOnly {
+            connection_id: ConnectionId {
+                pid: 3000,
+                ssl_ptr: 0x9000,
+            },
+            response: aggregated_response,
+        };
+
+        let results = analyzer.analyze_aggregated(&result);
+        let token_result = results
+            .iter()
+            .find(|r| matches!(r, AnalysisResult::Token(_)));
+        assert!(
+            token_result.is_some(),
+            "ResponseOnly with SSE usage should produce a TokenRecord"
+        );
+        if let Some(AnalysisResult::Token(record)) = token_result {
+            assert_eq!(record.input_tokens, 42);
+            assert_eq!(record.output_tokens, 7);
+        }
     }
 }
