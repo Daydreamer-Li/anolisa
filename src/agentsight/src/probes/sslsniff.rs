@@ -685,6 +685,10 @@ fn find_static_ssl_offsets(path: &str) -> Option<StaticSslOffsets> {
         ssl_write: wr_off,
         ssl_read: read_off,
         ssl_do_handshake: hs_off,
+        // Byte patterns above are BoringSSL-specific; BoringSSL does not use
+        // _ex variants, so write_is_ex/read_is_ex are always false here.
+        // OpenSSL static binaries are handled by Tier 1 (attach_static_ssl_by_symbol,
+        // which now includes _ex) or Tier 3 (codex offset table with write_is_ex=true).
         write_is_ex: false,
         read_is_ex: false,
     })
@@ -720,7 +724,7 @@ fn classify_ssl_lib(path: &str) -> Option<SslLibKind> {
     if name.starts_with("libnspr4.so") || name.starts_with("libnspr4-") {
         return Some(SslLibKind::Nss);
     }
-    // Statically-linked SSL (BoringSSL in node/chrome, OpenSSL in codex).
+    // Statically-linked SSL (OpenSSL in node/codex, BoringSSL in chrome).
     // Detect common binary names that are known to statically link SSL.
     if matches!(
         name.as_ref(),
@@ -949,7 +953,7 @@ fn attach_static_ssl_by_symbol(
     lib: &str,
     pid: i32,
 ) -> Result<Vec<Link>> {
-    Ok(vec![
+    let mut links = vec![
         up!(skel.progs_mut().probe_SSL_rw_enter(), pid, lib, "SSL_write")?,
         ur!(
             skel.progs_mut().probe_SSL_write_exit(),
@@ -971,7 +975,30 @@ fn attach_static_ssl_by_symbol(
             lib,
             "SSL_do_handshake"
         )?,
-    ])
+    ];
+
+    // Best-effort: OpenSSL 3.x exports SSL_write_ex/SSL_read_ex and prefers them
+    // over the plain variants. BoringSSL (Chrome) does not export _ex symbols,
+    // so attachment will fail — that's expected and we simply skip them.
+    macro_rules! try_ex {
+        ($prog:expr, $sym:expr) => {
+            match up!($prog, pid, lib, $sym) {
+                Ok(link) => links.push(link),
+                Err(e) => log::debug!(
+                    "[attach_static_ssl_by_symbol] {} not found in {} ({:#}, skipping",
+                    $sym,
+                    lib,
+                    e
+                ),
+            }
+        };
+    }
+    try_ex!(skel.progs_mut().probe_SSL_write_ex_enter(), "SSL_write_ex");
+    try_ex!(skel.progs_mut().probe_SSL_write_ex_exit(), "SSL_write_ex");
+    try_ex!(skel.progs_mut().probe_SSL_read_ex_enter(), "SSL_read_ex");
+    try_ex!(skel.progs_mut().probe_SSL_read_ex_exit(), "SSL_read_ex");
+
+    Ok(links)
 }
 
 fn attach_static_ssl_by_offset(
@@ -1217,6 +1244,86 @@ mod tests {
             ev.buf.len(),
             payload.len(),
             "buf_size clamped to available bytes"
+        );
+    }
+
+    #[test]
+    fn classify_ssl_lib_dynamic_libssl() {
+        assert_eq!(
+            classify_ssl_lib("/usr/lib64/libssl.so.3.0.12"),
+            Some(SslLibKind::OpenSsl)
+        );
+        assert_eq!(
+            classify_ssl_lib("/lib/x86_64-linux-gnu/libssl.so.3"),
+            Some(SslLibKind::OpenSsl)
+        );
+        assert_eq!(
+            classify_ssl_lib("/usr/lib/libssl-1.1.so"),
+            Some(SslLibKind::OpenSsl)
+        );
+    }
+
+    #[test]
+    fn classify_ssl_lib_node_binary() {
+        // Node.js may statically link OpenSSL; classify as Static so
+        // attach_static_ssl_by_symbol handles _ex variant attachment.
+        assert_eq!(classify_ssl_lib("/usr/bin/node"), Some(SslLibKind::Static));
+        assert_eq!(
+            classify_ssl_lib("/usr/local/bin/nodejs"),
+            Some(SslLibKind::Static)
+        );
+    }
+
+    #[test]
+    fn classify_ssl_lib_chrome_boringssl() {
+        assert_eq!(
+            classify_ssl_lib("/opt/google/chrome/chrome"),
+            Some(SslLibKind::Static)
+        );
+        assert_eq!(
+            classify_ssl_lib("/usr/bin/chromium"),
+            Some(SslLibKind::Static)
+        );
+    }
+
+    #[test]
+    fn classify_ssl_lib_codex() {
+        assert_eq!(
+            classify_ssl_lib("/usr/local/bin/codex"),
+            Some(SslLibKind::Static)
+        );
+        // codex.json should not match (has a dot).
+        assert_eq!(classify_ssl_lib("/etc/codex.json"), None);
+    }
+
+    #[test]
+    fn classify_ssl_lib_python_uv() {
+        // uv Python statically links OpenSSL but exports symbols in .symtab,
+        // so attach_openssl (with _ex) is used directly.
+        assert_eq!(
+            classify_ssl_lib("/root/.local/bin/python3.11"),
+            Some(SslLibKind::OpenSsl)
+        );
+        // Bare "python3" symlink should not match to avoid hooking system Python.
+        assert_eq!(classify_ssl_lib("/usr/bin/python3"), None);
+    }
+
+    #[test]
+    fn classify_ssl_lib_non_ssl_binary() {
+        assert_eq!(classify_ssl_lib("/usr/bin/ls"), None);
+        assert_eq!(classify_ssl_lib("/usr/bin/bash"), None);
+        assert_eq!(classify_ssl_lib("/lib64/libc.so.6"), None);
+    }
+
+    #[test]
+    fn classify_ssl_lib_strips_deleted_suffix() {
+        assert_eq!(
+            classify_ssl_lib("/usr/lib64/libssl.so.3.0.12 (deleted)"),
+            Some(SslLibKind::OpenSsl)
+        );
+        assert_eq!(
+            classify_ssl_lib("/usr/bin/node (deleted)"),
+            Some(SslLibKind::Static)
         );
     }
 }
