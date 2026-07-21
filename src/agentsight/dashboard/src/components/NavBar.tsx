@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 const navItems = [
   { path: '/', label: 'Agent 可观测', icon: '📊' },
+  { path: '/agents', label: 'Agent 看板', icon: '🖥' },
   { path: '/savings', label: 'Token 节省', icon: '⚡' },
   { path: '/optimization', label: '优化分析', icon: '🔬' },
   { path: '/skills', label: 'Skill 指标', icon: '🧩' },

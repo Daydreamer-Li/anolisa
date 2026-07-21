@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { NavBar } from './components/NavBar';
-import { AgentHealthSidebar } from './components/AgentHealthSidebar';
 import { ConversationList } from './pages/ConversationList';
+import { AgentDashboardPage } from './pages/AgentDashboardPage';
 import { AtifViewerPage } from './pages/AtifViewerPage';
 import { TokenSavingsPage } from './pages/TokenSavingsPage';
 import { SkillMetricsPage } from './pages/SkillMetricsPage';
@@ -100,20 +100,18 @@ const App: React.FC = () => {
           <AuthGate>
             <div className="min-h-screen bg-gray-50 flex flex-col">
               <NavBar />
-              <div className="flex flex-1 overflow-hidden">
-                <main className="flex-1 overflow-auto">
-                  <Routes>
-                    <Route path="/" element={<ConversationList />} />
-                    <Route path="/savings" element={<TokenSavingsPage />} />
-                    <Route path="/optimization" element={<OptimizationPage />} />
-                    <Route path="/optimization/:sessionId" element={<OptimizationPage />} />
-                    <Route path="/skills" element={<SkillMetricsPage />} />
-                    <Route path="/security" element={<SecurityObservabilityPage />} />
-                    <Route path="/atif" element={<AtifViewerPage />} />
-                  </Routes>
-                </main>
-                <AgentHealthSidebar />
-              </div>
+              <main className="flex-1 overflow-auto">
+                <Routes>
+                  <Route path="/" element={<ConversationList />} />
+                  <Route path="/agents" element={<AgentDashboardPage />} />
+                  <Route path="/savings" element={<TokenSavingsPage />} />
+                  <Route path="/optimization" element={<OptimizationPage />} />
+                  <Route path="/optimization/:sessionId" element={<OptimizationPage />} />
+                  <Route path="/skills" element={<SkillMetricsPage />} />
+                  <Route path="/security" element={<SecurityObservabilityPage />} />
+                  <Route path="/atif" element={<AtifViewerPage />} />
+                </Routes>
+              </main>
             </div>
           </AuthGate>
         } />
