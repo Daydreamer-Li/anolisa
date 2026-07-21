@@ -12,7 +12,7 @@ use crate::genai::semantic::{
 };
 use crate::storage::sqlite::genai::TraceEventDetail;
 
-use super::schema::*;
+use agentsight_atif::*;
 
 /// Convert a single trace (one user query's call chain) into an ATIF document.
 pub fn convert_trace_to_atif(
