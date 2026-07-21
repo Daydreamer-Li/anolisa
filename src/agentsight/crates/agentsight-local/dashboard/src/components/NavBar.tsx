@@ -2,8 +2,8 @@ import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 const navItems = [
-  { path: '/', label: '本地会话', icon: '📁' },
-  { path: '/atif', label: '轨迹查看器', icon: '🔍' },
+  { path: '/', label: '会话', icon: '📊' },
+  { path: '/atif', label: 'ATIF 查看器', icon: '🔍' },
 ];
 
 export const NavBar: React.FC = () => {
@@ -13,8 +13,8 @@ export const NavBar: React.FC = () => {
     <nav className="bg-white border-b border-gray-200 px-6 py-3">
       <div className="max-w-screen-xl mx-auto flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-xl font-bold text-gray-900">AgentSight Local</span>
-          <span className="text-xs text-gray-400 px-2 py-0.5 bg-gray-100 rounded">本地轨迹</span>
+          <span className="text-xl font-bold text-gray-900">AgentSight</span>
+          <span className="text-xs text-gray-400 px-2 py-0.5 bg-gray-100 rounded">v1.0</span>
         </div>
 
         <div className="flex items-center gap-1">
