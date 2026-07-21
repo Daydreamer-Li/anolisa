@@ -57,6 +57,34 @@ export async function fetchLocalAtif(filePath: string): Promise<AtifDocument> {
   return apiFetch<AtifDocument>(`${API_BASE}/api/local-session/atif?${params.toString()}`);
 }
 
+// ─── Agent Process Discovery (cross-platform via sysinfo) ──────────────────
+
+export interface AgentInfo {
+  id: string;
+  name: string;
+  icon: string;
+  category: string;
+  status: string;
+  pids: number[];
+  process_count: number;
+  cpu_percent: number;
+  mem_mb: number;
+  uptime_secs: number;
+  cmdline_preview: string;
+  cwd: string;
+}
+
+export interface AgentsSummary {
+  agents: AgentInfo[];
+  total_running: number;
+  scanned_at: number;
+  hostname: string;
+}
+
+export async function fetchAgents(): Promise<AgentsSummary> {
+  return apiFetch<AgentsSummary>(`${API_BASE}/api/agents`);
+}
+
 // ─── ATIF export APIs (session/conversation — not available on standalone server) ──
 
 export async function fetchAtifBySession(sessionId: string): Promise<AtifDocument> {

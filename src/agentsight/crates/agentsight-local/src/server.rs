@@ -3,6 +3,7 @@
 //! Simplified server: no AppState, no HealthChecker, no SQLite. Serves the
 //! local-session discovery/conversion API and an embedded frontend dashboard.
 
+mod agents;
 mod local_sessions;
 
 use actix_cors::Cors;
@@ -112,6 +113,8 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             .service(local_sessions::list_local_sessions)
             .service(local_sessions::convert_local_to_atif)
             .service(local_sessions::read_local_session_file)
+            // Agent process discovery API
+            .service(agents::list_agents)
             // Frontend static files (catch-all, must be last)
             .service(serve_frontend)
     })

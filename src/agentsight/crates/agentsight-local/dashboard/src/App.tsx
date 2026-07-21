@@ -2,6 +2,7 @@ import React from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { NavBar } from './components/NavBar';
 import { LocalSessions } from './pages/LocalSessions';
+import { AgentDashboardPage } from './pages/AgentDashboardPage';
 import { AtifViewerPage } from './pages/AtifViewerPage';
 
 const App: React.FC = () => {
@@ -12,6 +13,7 @@ const App: React.FC = () => {
         <main className="flex-1 overflow-auto">
           <Routes>
             <Route path="/" element={<LocalSessions />} />
+            <Route path="/agents" element={<AgentDashboardPage />} />
             <Route path="/atif" element={<AtifViewerPage />} />
           </Routes>
         </main>

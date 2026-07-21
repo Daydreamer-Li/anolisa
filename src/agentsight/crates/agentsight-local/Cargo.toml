@@ -16,3 +16,4 @@ include_dir = "0.7"
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
+sysinfo = "0.33"
