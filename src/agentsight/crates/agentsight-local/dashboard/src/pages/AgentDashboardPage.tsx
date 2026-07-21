@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { fetchAgents, type AgentInfo, type AgentsSummary } from '../utils/apiClient';
 
 function formatUptime(secs: number): string {
