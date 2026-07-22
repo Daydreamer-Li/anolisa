@@ -445,3 +445,138 @@ pub async fn list_agents() -> impl Responder {
         Err(e) => HttpResponse::InternalServerError().body(format!("Process scan failed: {e}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_proc(pid: u32, comm: &str, cmdline: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            comm: comm.to_string(),
+            cmdline: cmdline.to_string(),
+            cpu_percent: 1.0,
+            mem_mb: 100.0,
+            uptime_secs: 60,
+            cwd: String::new(),
+        }
+    }
+
+    // ── contains_word ──────────────────────────────────────────────────────
+
+    #[test]
+    fn contains_word_exact_match() {
+        assert!(contains_word("claude", "claude"));
+        assert!(contains_word("node /usr/bin/claude", "claude"));
+    }
+
+    #[test]
+    fn contains_word_case_insensitive() {
+        assert!(contains_word("CLAUDE CODE", "claude"));
+        assert!(contains_word("Node Claude", "CLAUDE"));
+    }
+
+    #[test]
+    fn contains_word_hyphen_is_word_char() {
+        // Hyphen is treated as part of a word, so "qoder" should NOT match
+        // "qoder-server" or "qoderwork"
+        assert!(!contains_word("qoder-server", "qoder"));
+        assert!(!contains_word("qoderwork", "qoder"));
+        assert!(!contains_word("agentsight-local", "agentsight"));
+    }
+
+    #[test]
+    fn contains_word_underscore_is_word_char() {
+        assert!(!contains_word("qoder_server", "qoder"));
+        assert!(contains_word("qoder server", "qoder"));
+    }
+
+    #[test]
+    fn contains_word_boundary_chars() {
+        // Space, slash, and string boundaries are word boundaries
+        assert!(contains_word("/usr/bin/qoder", "qoder"));
+        assert!(contains_word("qoder --flag", "qoder"));
+        assert!(!contains_word("qoderx", "qoder"));
+    }
+
+    #[test]
+    fn contains_word_no_match() {
+        assert!(!contains_word("vim", "claude"));
+        assert!(!contains_word("", "claude"));
+    }
+
+    // ── match_agents ───────────────────────────────────────────────────────
+
+    #[test]
+    fn match_agents_by_comm_exact() {
+        let procs = vec![make_proc(100, "claude", "node claude.js")];
+        let agents = match_agents(&procs);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "claude-code");
+        assert_eq!(agents[0].name, "Claude Code");
+        assert_eq!(agents[0].pids, vec![100]);
+        assert_eq!(agents[0].process_count, 1);
+    }
+
+    #[test]
+    fn match_agents_by_cmdline_contains() {
+        let procs = vec![make_proc(200, "node", "/usr/bin/node @google/gemini-cli")];
+        let agents = match_agents(&procs);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "gemini-cli");
+    }
+
+    #[test]
+    fn match_agents_skip_self() {
+        let procs = vec![make_proc(1, "agentsight-local", "agentsight-local serve")];
+        let agents = match_agents(&procs);
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn match_agents_skip_unknown() {
+        let procs = vec![make_proc(300, "vim", "vim main.rs")];
+        let agents = match_agents(&procs);
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn match_agents_aggregate_multiple_procs() {
+        let procs = vec![
+            make_proc(10, "claude", "node claude.js"),
+            make_proc(11, "claude", "node claude.js"),
+            make_proc(12, "node", "/usr/bin/node @google/gemini-cli"),
+        ];
+        let agents = match_agents(&procs);
+        assert_eq!(agents.len(), 2);
+
+        // Sorted by process_count descending — claude-code has 2, gemini-cli has 1
+        assert_eq!(agents[0].id, "claude-code");
+        assert_eq!(agents[0].process_count, 2);
+        assert_eq!(agents[0].pids, vec![10, 11]);
+        // CPU and memory should be summed
+        assert_eq!(agents[0].cpu_percent, 2.0);
+        assert_eq!(agents[0].mem_mb, 200.0);
+
+        assert_eq!(agents[1].id, "gemini-cli");
+        assert_eq!(agents[1].process_count, 1);
+    }
+
+    #[test]
+    fn match_agents_no_false_positive_qoder() {
+        // "qoder-server" should not match "qoder" signature
+        let procs = vec![make_proc(400, "node", "node /opt/qoder-server/main.js")];
+        let agents = match_agents(&procs);
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn match_agents_one_agent_per_process() {
+        // A process that could match multiple signatures should only match the first
+        let procs = vec![make_proc(500, "claude", "claude-code --agent aider")];
+        let agents = match_agents(&procs);
+        assert_eq!(agents.len(), 1);
+        // claude-code (comm_exact) comes before aider in the signature list
+        assert_eq!(agents[0].id, "claude-code");
+    }
+}
