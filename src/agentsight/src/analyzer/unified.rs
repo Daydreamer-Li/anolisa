@@ -572,9 +572,17 @@ impl Analyzer {
                     return None;
                 }
                 let req_body = stream.request_json_body();
-                let resp_body = stream
-                    .response_sse_json_array()
-                    .or_else(|| stream.response_json_body());
+                if let Some(sse_json) = stream.response_sse_json_array() {
+                    // SSE-shaped response: OpenAI/Anthropic semantics are already
+                    // reconstructed by the genai builder's SSE fallback from the raw
+                    // HttpRecord, so only SysOM (non-standard llmParamString / tool_use
+                    // envelope) still needs the typed parser here.
+                    return self
+                        .message
+                        .parse_by_path_sysom_only(&path, req_body.as_ref(), Some(&sse_json))
+                        .map(AnalysisResult::Message);
+                }
+                let resp_body = stream.response_json_body();
                 self.analyze_message(&path, req_body.as_ref(), resp_body.as_ref())
             }
             AggregatedResult::ResponseOnly { .. }

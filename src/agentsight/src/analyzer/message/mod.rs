@@ -115,16 +115,39 @@ impl MessageParser {
         }
 
         // Try Aliyun SysOM (AK/SK auth mode)
-        if SysomParser::matches_path(path) {
-            let request = request_body.and_then(SysomParser::parse_request);
-            let response = response_body.and_then(SysomParser::parse_response);
-
-            if request.is_some() || response.is_some() {
-                return Some(ParsedApiMessage::SysomMessage { request, response });
-            }
+        if let Some(parsed) = self.parse_by_path_sysom_only(path, request_body, response_body) {
+            return Some(parsed);
         }
 
         log::warn!("Path '{path}' does not match any known LLM API endpoint");
+        None
+    }
+
+    /// Parse request/response bodies against the SysOM parser only.
+    ///
+    /// SysOM's Copilot API is deliberately kept as the *only* deep-parsing
+    /// target for SSE-shaped responses: its body is a non-standard envelope
+    /// (`llmParamString`-encoded request, cumulative SSE chunks, `tool_use`
+    /// array) that the generic HttpRecord/genai-builder SSE fallback cannot
+    /// reconstruct. OpenAI/Anthropic SSE responses are intentionally left
+    /// unparsed here because `genai::builder::extract_parts_from_sse_body`
+    /// already rebuilds their semantic content from the raw HttpRecord —
+    /// parsing them again here would just duplicate that work.
+    pub fn parse_by_path_sysom_only(
+        &self,
+        path: &str,
+        request_body: Option<&serde_json::Value>,
+        response_body: Option<&serde_json::Value>,
+    ) -> Option<ParsedApiMessage> {
+        if !SysomParser::matches_path(path) {
+            return None;
+        }
+        let request = request_body.and_then(SysomParser::parse_request);
+        let response = response_body.and_then(SysomParser::parse_response);
+
+        if request.is_some() || response.is_some() {
+            return Some(ParsedApiMessage::SysomMessage { request, response });
+        }
         None
     }
 
@@ -133,6 +156,11 @@ impl MessageParser {
     /// This method handles streaming responses where the response is delivered
     /// via Server-Sent Events (SSE) instead of a single JSON body.
     /// SSE events are converted to a JSON array and passed to parse_response.
+    ///
+    /// Only the SysOM path is deep-parsed here (see
+    /// [`Self::parse_by_path_sysom_only`] for why) — OpenAI/Anthropic SSE
+    /// responses rely on the HttpRecord-based genai-builder fallback instead,
+    /// avoiding duplicate provider/model/message extraction.
     ///
     /// # Arguments
     /// * `path` - The HTTP request path (e.g., "/v1/chat/completions")
@@ -163,8 +191,7 @@ impl MessageParser {
             Some(serde_json::Value::Array(chunks))
         };
 
-        // Use parse_by_path with the converted response body
-        self.parse_by_path(path, request_body, response_body.as_ref())
+        self.parse_by_path_sysom_only(path, request_body, response_body.as_ref())
     }
 
     /// Detect provider from path without parsing
