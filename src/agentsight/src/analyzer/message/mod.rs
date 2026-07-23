@@ -438,4 +438,123 @@ mod tests {
             "https://api.anthropic.com/v1/messages"
         ));
     }
+
+    // -- parse_by_path_sysom_only / parse_by_path_with_sse scoping tests --
+    //
+    // These cover the branch-A/branch-B dedup fix: SSE responses for
+    // OpenAI/Anthropic must no longer be deep-parsed here (that semantic
+    // reconstruction now lives solely in genai::extract_parts_from_sse_body
+    // against the raw HttpRecord), while SysOM must still be deep-parsed
+    // because its llmParamString/tool_use envelope has no HttpRecord fallback.
+
+    #[test]
+    fn test_parse_by_path_sysom_only_rejects_openai_and_anthropic() {
+        let parser = MessageParser::new();
+        let openai_request = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        let anthropic_request = serde_json::json!({
+            "model": "claude-3-opus-20240229",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        assert!(
+            parser
+                .parse_by_path_sysom_only("/v1/chat/completions", Some(&openai_request), None)
+                .is_none()
+        );
+        assert!(
+            parser
+                .parse_by_path_sysom_only("/v1/messages", Some(&anthropic_request), None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_parse_by_path_sysom_only_accepts_sysom() {
+        let parser = MessageParser::new();
+        let params = serde_json::json!({
+            "model": "qwen3-coder-plus",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        let request = serde_json::json!({"llmParamString": params.to_string()});
+
+        let result = parser.parse_by_path_sysom_only(
+            "/api/v1/copilot/generate_copilot",
+            Some(&request),
+            None,
+        );
+        match result {
+            Some(ParsedApiMessage::SysomMessage {
+                request: Some(req), ..
+            }) => {
+                assert_eq!(req.params.model, "qwen3-coder-plus");
+            }
+            other => panic!("expected SysomMessage with request, got {other:?}"),
+        }
+    }
+
+    /// Build a `ParsedSseEvent` carrying the given raw SSE `data:` payload (no
+    /// framing needed — `parse_by_path_with_sse` reads the event body as JSON).
+    fn make_sse_event(data: &str) -> ParsedSseEvent {
+        use crate::probes::sslsniff::SslEvent;
+        use std::rc::Rc;
+
+        let ssl_event = Rc::new(SslEvent {
+            source: 0,
+            timestamp_ns: 0,
+            delta_ns: 0,
+            pid: 1,
+            tid: 1,
+            uid: 0,
+            len: data.len() as u32,
+            rw: 0,
+            comm: String::new(),
+            buf: data.as_bytes().to_vec(),
+            is_handshake: false,
+            ssl_ptr: 0,
+        });
+        ParsedSseEvent::new(None, None, None, 0, data.len(), ssl_event)
+    }
+
+    #[test]
+    fn test_parse_by_path_with_sse_skips_openai() {
+        let parser = MessageParser::new();
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "model": "gpt-4o",
+            "choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]
+        });
+        let events = vec![make_sse_event(&chunk.to_string())];
+
+        // Previously this returned Some(OpenAICompletion { .. }); now branch A
+        // leaves OpenAI/Anthropic SSE responses unparsed since the genai
+        // builder's SSE fallback already reconstructs the same semantics from
+        // the raw HttpRecord.
+        let result = parser.parse_by_path_with_sse("/v1/chat/completions", None, &events);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_by_path_with_sse_still_parses_sysom() {
+        let parser = MessageParser::new();
+        let chunk = serde_json::json!({
+            "choices": [{"message": {"content": "hi", "tool_use": null}}]
+        });
+        let events = vec![make_sse_event(&chunk.to_string())];
+
+        let result =
+            parser.parse_by_path_with_sse("/api/v1/copilot/generate_copilot", None, &events);
+        match result {
+            Some(ParsedApiMessage::SysomMessage {
+                response: Some(resp),
+                ..
+            }) => {
+                assert_eq!(resp.choices[0].message.content, "hi");
+            }
+            other => panic!("expected SysomMessage with response, got {other:?}"),
+        }
+    }
 }
