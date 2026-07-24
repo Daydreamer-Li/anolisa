@@ -411,7 +411,7 @@ fn match_agents(processes: &[ProcessInfo]) -> Vec<AgentInfo> {
         })
         .collect();
 
-    agents.sort_by(|a, b| b.process_count.cmp(&a.process_count));
+    agents.sort_by_key(|agent| std::cmp::Reverse(agent.process_count));
     agents
 }
 

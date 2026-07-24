@@ -213,11 +213,10 @@ fn generate_c_header(crate_dir: &str) {
 }
 
 fn main() {
-    let mut out =
-        PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set in build script"));
-
     #[cfg(target_os = "linux")]
     {
+        let mut out =
+            PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set in build script"));
         generate_ebpf_artifacts(&mut out);
     }
 

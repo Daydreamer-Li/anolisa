@@ -30,8 +30,8 @@ build-local-frontend: ## Build agentsight-local frontend (Agent Dashboard, for m
 		&& npm run build:embed
 
 .PHONY: build-mac
-build-mac: build-local-frontend ## Build for macOS (agentsight-local frontend + agentsight binary, no eBPF)
-	cargo build --release
+build-mac: build-local-frontend ## Build macOS local viewer (serve only; no eBPF)
+	cargo build --release --bin agentsight
 
 .PHONY: example
 example: build ## Build C FFI example (requires libagentsight)

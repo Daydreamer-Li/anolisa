@@ -17,9 +17,19 @@ use cli::{
 };
 
 #[derive(Debug, StructOpt)]
-#[structopt(
-    name = "agentsight",
-    about = "AI Agent observability tool - trace processes, SSL traffic, and LLM API calls via eBPF"
+#[cfg_attr(
+    target_os = "linux",
+    structopt(
+        name = "agentsight",
+        about = "AI Agent observability tool - trace processes, SSL traffic, and LLM API calls via eBPF"
+    )
+)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    structopt(
+        name = "agentsight",
+        about = "Local AI agent trajectory viewer - serve local sessions without eBPF tracing"
+    )
 )]
 pub enum Command {
     /// Query token consumption data

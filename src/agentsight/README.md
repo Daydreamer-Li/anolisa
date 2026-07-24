@@ -272,7 +272,7 @@ The binary is output to `target/release/agentsight`.
 
 ### Build on macOS
 
-macOS does not require libbpf, clang/llvm, or kernel headers — only Rust and Node.js.
+macOS builds the lightweight `agentsight serve` local viewer. It does not require libbpf, clang/llvm, kernel headers, root, or Linux BPF capabilities.
 
 **Prerequisites:**
 
@@ -287,14 +287,8 @@ macOS does not require libbpf, clang/llvm, or kernel headers — only Rust and N
 ```bash
 cd src/agentsight
 
-# 1. Build the agentsight-local frontend (Agent Dashboard + session viewer)
-cd crates/agentsight-local/dashboard
-npm install
-npm run build:embed    # outputs to ../frontend-dist/
-cd ../../..
-
-# 2. Build the agentsight binary (eBPF code is automatically excluded on macOS)
-cargo build --release
+# Build the agentsight-local frontend and the macOS serve-only binary
+make build-mac
 ```
 
 The binary is output to `target/release/agentsight`.
@@ -303,15 +297,15 @@ The binary is output to `target/release/agentsight`.
 
 ```bash
 # Start the Agent Dashboard + local session viewer
-agentsight serve
+target/release/agentsight serve
 
 # Bind to a custom host/port
-agentsight serve --host 0.0.0.0 --port 8080
+target/release/agentsight serve --host 0.0.0.0 --port 8080
 ```
 
-Open `http://127.0.0.1:7396` to view the Agent Dashboard.
+Open `http://127.0.0.1:7396` to view the Agent Dashboard. The macOS server scans running AI agent processes and reads local ATIF trajectory files from `~/.agentsight/sessions/`.
 
-> **macOS limitations**: eBPF tracing commands (`trace`, `discover`, `token`, `audit`, `metrics`, `interruption`, `skill-metrics`, `summary`) are Linux-only and not available on macOS. The `serve` command provides the Agent Dashboard (scans running agent processes) and local session viewer (reads ATIF trajectory files from `~/.agentsight/sessions/`).
+> **macOS limitations**: eBPF tracing commands (`trace`, `discover`, `token`, `audit`, `metrics`, `interruption`, `skill-metrics`, `summary`) are Linux-only and not available on macOS. The `--db` and `--config` flags are also Linux-only because macOS `serve` uses the lightweight `agentsight-local` server without SQLite-backed trace storage.
 
 ### Install via RPM
 

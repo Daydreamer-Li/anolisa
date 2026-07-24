@@ -74,26 +74,22 @@ macOS 上 AgentSight 编译为轻量二进制：仅包含 `agentsight serve`（A
 ```bash
 cd src/agentsight
 
-# 1. 构建 agentsight-local 前端（Agent 看板 + 会话查看器）
-cd crates/agentsight-local/dashboard
-npm install
-npm run build:embed    # 产物输出到 ../frontend-dist/
-cd ../../..
-
-# 2. 编译 agentsight 二进制（macOS 上自动排除 eBPF 代码）
-cargo build --release
+# 构建 agentsight-local 前端和 macOS serve-only 二进制
+make build-mac
 # 产物：target/release/agentsight
 ```
+
+`make build-mac` 会先在 `crates/agentsight-local/dashboard` 中构建本地查看器前端，再执行 `cargo build --release --bin agentsight`。macOS 产物只包含 `serve` 子命令，不会构建或加载 eBPF 代码。
 
 ### macOS 使用
 
 ```bash
 # 启动 Agent 看板 + 本地会话查看器
-agentsight serve
+target/release/agentsight serve
 # 打开 http://127.0.0.1:7396
 
 # 自定义 host/port
-agentsight serve --host 0.0.0.0 --port 8080
+target/release/agentsight serve --host 0.0.0.0 --port 8080
 ```
 
 ### macOS 限制
@@ -299,5 +295,5 @@ AGENTSIGHT_CHROME_TRACE=1 sudo agentsight trace
 |------|------|----------|
 | `Failed to create probes` | 内核不支持 BTF | 检查 `/sys/kernel/btf/vmlinux` 是否存在 |
 | `Failed to attach probes` | 权限不足 | 使用 `sudo` 或 `setcap cap_bpf,cap_perfmon=ep` |
-| `Frontend not embedded` | 未构建前端 | `cd dashboard && npm run build:embed && make build` |
+| `Frontend not embedded` | 未构建对应前端 | Linux: `make build-all`；macOS: `make build-mac` |
 | `Tokenizer not found` | 未下载 tokenizer | 设置 `AGENTSIGHT_TOKENIZER_PATH` 或自动下载 |

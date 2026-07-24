@@ -26,7 +26,7 @@ pub mod token;
 pub mod trace;
 
 /// Default configuration file path (shared by trace / serve / dashboard).
-#[cfg(feature = "server")]
+#[cfg(all(feature = "server", target_os = "linux"))]
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/agentsight/config.json";
 
 /// Load `ServerAuthConfig` from the agentsight config file.

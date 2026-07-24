@@ -114,7 +114,7 @@ pub fn discover_local_sessions() -> Vec<LocalSession> {
         }
     }
 
-    sessions.sort_by(|a, b| b.modified_ts.cmp(&a.modified_ts));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_ts));
     sessions
 }
 
@@ -237,12 +237,12 @@ fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Opt
 
         if !is_user && !is_assistant {
             // Still try to extract session_id from early lines
-            if session_id.is_empty() && trimmed.contains("sessionId") {
-                if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    if let Some(sid) = event.get("sessionId").and_then(|v| v.as_str()) {
-                        session_id = sid.to_string();
-                    }
-                }
+            if session_id.is_empty()
+                && trimmed.contains("sessionId")
+                && let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && let Some(sid) = event.get("sessionId").and_then(|v| v.as_str())
+            {
+                session_id = sid.to_string();
             }
             continue;
         }
@@ -255,12 +255,14 @@ fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Opt
         if is_user && !parsed_first_user {
             parsed_first_user = true;
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if session_id.is_empty() {
-                    if let Some(sid) = event.get("sessionId").and_then(|v| v.as_str()) {
-                        session_id = sid.to_string();
-                    }
+                if session_id.is_empty()
+                    && let Some(sid) = event.get("sessionId").and_then(|v| v.as_str())
+                {
+                    session_id = sid.to_string();
                 }
-                if let Some(content_arr) = event.pointer("/message/content").and_then(|c| c.as_array()) {
+                if let Some(content_arr) =
+                    event.pointer("/message/content").and_then(|c| c.as_array())
+                {
                     for block in content_arr {
                         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         if block_type == "text" {
@@ -287,18 +289,19 @@ fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Opt
             }
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                if event_type == "user" {
-                    if let Some(content_arr) = event.pointer("/message/content").and_then(|c| c.as_array()) {
-                        for block in content_arr {
-                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            if block_type == "text" {
-                                let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                                if !text.is_empty() && first_message.is_empty() {
-                                    first_message = strip_system_context(text);
-                                    first_message = truncate(&first_message, 200);
-                                }
-                                has_human_text = true;
+                if event_type == "user"
+                    && let Some(content_arr) =
+                        event.pointer("/message/content").and_then(|c| c.as_array())
+                {
+                    for block in content_arr {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        if block_type == "text" {
+                            let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                            if !text.is_empty() && first_message.is_empty() {
+                                first_message = strip_system_context(text);
+                                first_message = truncate(&first_message, 200);
                             }
+                            has_human_text = true;
                         }
                     }
                 }
