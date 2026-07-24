@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! Process Trace Tool - Monitor process execution and output
 //!
 //! Usage: proctrace [OPTIONS]

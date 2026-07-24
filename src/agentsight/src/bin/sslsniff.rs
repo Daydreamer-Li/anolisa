@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! SSL Sniffer Tool - Parse and print HTTP/SSE traffic from SSL connections
 //!
 //! Usage: sslsniff [OPTIONS]

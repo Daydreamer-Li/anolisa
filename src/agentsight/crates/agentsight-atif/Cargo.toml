@@ -1,9 +1,0 @@
-[package]
-name = "agentsight-atif"
-version = "0.1.0"
-edition.workspace = true
-description = "ATIF v1.6 (Agent Trajectory Interchange Format) schema types — cross-platform, serde only"
-
-[dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }

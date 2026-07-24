@@ -11,7 +11,7 @@
 use serde_json::Value;
 use std::path::Path;
 
-use agentsight_atif::{
+use crate::atif::{
     AtifAgent, AtifDocument, AtifFinalMetrics, AtifObservation, AtifObservationResult, AtifStep,
     AtifToolCall, SCHEMA_VERSION,
 };

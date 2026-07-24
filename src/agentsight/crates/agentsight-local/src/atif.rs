@@ -3,7 +3,7 @@
 //! Defines Rust types that serialize to/from the ATIF v1.6 JSON schema.
 //! See: <https://github.com/laude-institute/harbor/blob/main/docs/rfcs/0001-trajectory-format.md>
 //!
-//! This crate is intentionally cross-platform and depends only on `serde` /
+//! This module is intentionally cross-platform and depends only on `serde` /
 //! `serde_json` so it can be used by both the Linux-only `agentsight` crate
 //! and the cross-platform `agentsight-local` crate without pulling in eBPF /
 //! SQLite / Linux-only dependencies.
