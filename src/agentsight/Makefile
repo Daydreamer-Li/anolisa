@@ -22,6 +22,17 @@ build-frontend: ## Build and embed frontend into frontend-dist/
 .PHONY: build-all
 build-all: build-frontend build ## Build frontend then Rust binary (with embedded UI)
 
+.PHONY: build-local-frontend
+build-local-frontend: ## Build agentsight-local frontend (Agent Dashboard, for macOS)
+	cd crates/agentsight-local/dashboard && npm install \
+		--registry="$(NPM_REGISTRY)" \
+		--replace-registry-host="$(NPM_REPLACE_REGISTRY_HOST)" \
+		&& npm run build:embed
+
+.PHONY: build-mac
+build-mac: build-local-frontend ## Build for macOS (agentsight-local frontend + agentsight binary, no eBPF)
+	cargo build --release
+
 .PHONY: example
 example: build ## Build C FFI example (requires libagentsight)
 	gcc -o target/release/agentsight_example examples/agentsight_example.c \

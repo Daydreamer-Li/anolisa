@@ -3,12 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "==> Building frontend..."
+echo "==> Building agentsight-local frontend..."
 cd dashboard
 npm run build:embed
 cd ..
 
-echo "==> Building Rust backend..."
-cargo build -p agentsight-local
+echo "==> Building agentsight binary..."
+cargo build --release
 
-echo "==> Done! Binary: target/debug/agentsight-local"
+echo "==> Done! Binary: target/release/agentsight"
