@@ -172,6 +172,13 @@ fn scan_project_dir(
     }
 }
 
+/// Maximum file size to fully parse for the session listing (5 MB).
+/// Larger files are listed with basic metadata only (no message count).
+const MAX_PARSE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Skip files larger than this entirely (50 MB) — too large to parse quickly.
+const MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
+
 /// Parse a JSONL session file to extract metadata for the session list.
 fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Option<LocalSession> {
     let metadata = fs::metadata(path).ok()?;
@@ -187,39 +194,73 @@ fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Opt
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // Skip very large files — just return basic metadata
+    if metadata.len() > MAX_FILE_SIZE_BYTES {
+        return Some(LocalSession {
+            session_id: path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            agent_id: source.agent_id.to_string(),
+            agent_name: source.agent_name.to_string(),
+            agent_icon: source.icon.to_string(),
+            project: project.to_string(),
+            message_count: 0,
+            first_message: "(file too large to preview)".to_string(),
+            file_path: path.to_string_lossy().to_string(),
+            file_size_kb,
+            modified_ts,
+        });
+    }
+
     let content = fs::read_to_string(path).ok()?;
+
     let mut session_id = String::new();
     let mut message_count = 0u32;
     let mut first_message = String::new();
     let mut has_human_text = false;
 
+    // Fast pass: count user/assistant lines without full JSON parse.
+    // Only parse JSON for the first match to extract session_id and first_message.
+    let mut parsed_first_user = false;
     for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        let event: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
 
-        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        // Fast string check before expensive JSON parse
+        let is_user = trimmed.contains(r#""type":"user""#) || trimmed.contains(r#""type": "user""#);
+        let is_assistant =
+            trimmed.contains(r#""type":"assistant""#) || trimmed.contains(r#""type": "assistant""#);
 
-        // Extract session_id from runtime-config or any event
-        if session_id.is_empty()
-            && let Some(sid) = event.get("sessionId").and_then(|v| v.as_str())
-        {
-            session_id = sid.to_string();
+        if !is_user && !is_assistant {
+            // Still try to extract session_id from early lines
+            if session_id.is_empty() && trimmed.contains("sessionId") {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(sid) = event.get("sessionId").and_then(|v| v.as_str()) {
+                        session_id = sid.to_string();
+                    }
+                }
+            }
+            continue;
         }
 
-        match event_type {
-            "runtime-config" | "session_meta" | "progress" | "last-prompt" => continue,
-            "user" | "assistant" => {
-                message_count += 1;
-                if event_type == "user"
-                    && let Some(content_arr) =
-                        event.pointer("/message/content").and_then(|c| c.as_array())
-                {
+        if is_user || is_assistant {
+            message_count += 1;
+        }
+
+        // Parse JSON only for the first user message to extract first_message
+        if is_user && !parsed_first_user {
+            parsed_first_user = true;
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if session_id.is_empty() {
+                    if let Some(sid) = event.get("sessionId").and_then(|v| v.as_str()) {
+                        session_id = sid.to_string();
+                    }
+                }
+                if let Some(content_arr) = event.pointer("/message/content").and_then(|c| c.as_array()) {
                     for block in content_arr {
                         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         if block_type == "text" {
@@ -233,7 +274,35 @@ fn parse_session_file(path: &Path, source: &SessionSource, project: &str) -> Opt
                     }
                 }
             }
-            _ => {}
+        }
+    }
+
+    // For large files where no user message was found via fast scan,
+    // try parsing first 50 lines fully as fallback
+    if !has_human_text && metadata.len() > MAX_PARSE_SIZE_BYTES {
+        for line in content.lines().take(50) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if event_type == "user" {
+                    if let Some(content_arr) = event.pointer("/message/content").and_then(|c| c.as_array()) {
+                        for block in content_arr {
+                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            if block_type == "text" {
+                                let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                if !text.is_empty() && first_message.is_empty() {
+                                    first_message = strip_system_context(text);
+                                    first_message = truncate(&first_message, 200);
+                                }
+                                has_human_text = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

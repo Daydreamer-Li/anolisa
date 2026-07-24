@@ -271,8 +271,9 @@ fn scan_processes() -> Vec<ProcessInfo> {
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     // sysinfo needs two CPU snapshots to compute usage %;
-    // first call gets baseline, sleep briefly, then second call computes delta
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // first call gets baseline, sleep briefly, then second call computes delta.
+    // Use a short sleep to keep the endpoint responsive.
+    std::thread::sleep(std::time::Duration::from_millis(50));
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     let now = std::time::SystemTime::now()
