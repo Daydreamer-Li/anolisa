@@ -22,6 +22,13 @@ static FRONTEND: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../frontend
 
 // ─── Static file handler ─────────────────────────────────────────────────────
 
+/// Catch-all for unregistered /api/* paths — returns empty JSON instead of
+/// falling through to the SPA index.html, which would break frontend JSON parsing.
+#[get("/api/{tail:.*}")]
+async fn api_fallback() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({}))
+}
+
 /// Serve embedded frontend files.
 /// Any path that doesn't start with /api is treated as a static asset;
 /// unknown paths fall back to index.html (SPA client-side routing).
@@ -151,6 +158,8 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             .service(local_sessions::read_local_session_file)
             // Agent process discovery API
             .service(agents::list_agents)
+            // Catch-all for unregistered API endpoints (returns empty JSON)
+            .service(api_fallback)
             // Frontend static files (catch-all, must be last)
             .service(serve_frontend)
     })
