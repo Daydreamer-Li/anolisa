@@ -81,4 +81,10 @@ collect_message_ids!([
     slash_parse_error_ids,
     question_hardening_ids,
     question_interaction_ids,
+    session_picker_ids,
+    session_fresh_ids,
+    approval_reason_ids,
+    routing_insight_ids,
+    activity_untracked_ids,
+    approval_turn_consent_ids,
 ],);

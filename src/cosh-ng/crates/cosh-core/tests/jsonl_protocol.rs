@@ -48,146 +48,6 @@ fn run_with_input_at_home(home: &std::path::Path, lines: &[&str]) -> Vec<Value> 
 }
 
 #[test]
-fn failed_auth_persistence_does_not_emit_auth_ok() {
-    let home = tempfile::tempdir().expect("temp home");
-    let config_dir = home.path().join(".copilot-shell");
-    std::fs::create_dir_all(&config_dir).expect("config directory");
-    let config_path = config_dir.join("config.toml");
-    let original = r#"[ai]
-active_provider = "first"
-
-[ai.providers.first]
-api_key = "enc:broken"
-"#;
-    std::fs::write(&config_path, original).expect("opaque config");
-
-    let messages = run_with_input_at_home(
-        home.path(),
-        &[
-            r#"{"type":"control_response","response":{"subtype":"auth","request_id":"auth-init","response":{"provider_id":"dashscope","values":{"api_key":"new-secret"},"persist":true}}}"#,
-            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
-        ],
-    );
-
-    assert!(messages.iter().any(|message| {
-        message["type"] == "system"
-            && message["status"] == "auth_persist_failed"
-            && message["request_id"] == "auth-init"
-    }));
-    assert!(!messages
-        .iter()
-        .any(|message| message["type"] == "system" && message["status"] == "auth_ok"));
-    assert_eq!(std::fs::read_to_string(config_path).unwrap(), original);
-}
-
-#[test]
-fn unusable_auth_response_fails_before_persistence() {
-    let home = tempfile::tempdir().expect("temp home");
-    let config_dir = home.path().join(".copilot-shell");
-    std::fs::create_dir_all(&config_dir).expect("config directory");
-    let config_path = config_dir.join("config.toml");
-    let original = r#"[ai]
-active_provider = "aliyun"
-
-[ai.providers.aliyun]
-type = "aliyun"
-"#;
-    std::fs::write(&config_path, original).expect("incomplete Aliyun config");
-
-    let messages = run_with_input_at_home(
-        home.path(),
-        &[
-            r#"{"type":"control_response","response":{"subtype":"auth","request_id":"auth-init","response":{"provider_id":"aliyun","provider_type":"aliyun","values":{"model":"qwen3.7-plus"},"persist":true}}}"#,
-            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
-        ],
-    );
-
-    assert!(messages.iter().any(|message| {
-        message["type"] == "system"
-            && message["status"] == "auth_persist_failed"
-            && message["request_id"] == "auth-init"
-    }));
-    assert!(!messages
-        .iter()
-        .any(|message| message["type"] == "system" && message["status"] == "auth_ok"));
-    assert_eq!(std::fs::read_to_string(config_path).unwrap(), original);
-}
-
-#[test]
-fn whitespace_only_api_key_is_rejected_before_persistence() {
-    let home = tempfile::tempdir().expect("temp home");
-    let config_path = home.path().join(".copilot-shell/config.toml");
-
-    let messages = run_with_input_at_home(
-        home.path(),
-        &[
-            r#"{"type":"control_response","response":{"subtype":"auth","request_id":"auth-init","response":{"provider_id":"dashscope","provider_type":"dashscope","values":{"api_key":"   "},"persist":true}}}"#,
-            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
-        ],
-    );
-
-    assert!(messages.iter().any(|message| {
-        message["type"] == "system"
-            && message["status"] == "auth_persist_failed"
-            && message["request_id"] == "auth-init"
-    }));
-    assert!(!messages
-        .iter()
-        .any(|message| message["type"] == "system" && message["status"] == "auth_ok"));
-    assert!(!config_path.exists());
-}
-
-#[test]
-fn whitespace_only_aliyun_access_keys_are_rejected_before_persistence() {
-    let home = tempfile::tempdir().expect("temp home");
-    let config_path = home.path().join(".copilot-shell/config.toml");
-
-    let messages = run_with_input_at_home(
-        home.path(),
-        &[
-            r#"{"type":"control_response","response":{"subtype":"auth","request_id":"auth-init","response":{"provider_id":"aliyun","provider_type":"aliyun","values":{"access_key_id":"   ","access_key_secret":"\t"},"persist":true}}}"#,
-            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
-        ],
-    );
-
-    assert!(messages.iter().any(|message| {
-        message["type"] == "system"
-            && message["status"] == "auth_persist_failed"
-            && message["request_id"] == "auth-init"
-    }));
-    assert!(!messages
-        .iter()
-        .any(|message| message["type"] == "system" && message["status"] == "auth_ok"));
-    assert!(!config_path.exists());
-}
-
-#[test]
-fn persist_false_auth_reports_applied_without_saving() {
-    let home = tempfile::tempdir().expect("temp home");
-    let config_path = home.path().join(".copilot-shell/config.toml");
-
-    let messages = run_with_input_at_home(
-        home.path(),
-        &[
-            r#"{"type":"control_response","response":{"subtype":"auth","request_id":"auth-init","response":{"provider_id":"dashscope","provider_type":"dashscope","values":{"api_key":"sk-real"},"persist":false}}}"#,
-            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
-        ],
-    );
-
-    // Credentials were applied to the run but not saved: report auth_applied,
-    // never auth_ok, and leave the disk untouched.
-    assert!(messages.iter().any(|message| {
-        message["type"] == "system"
-            && message["status"] == "auth_applied"
-            && message["request_id"] == "auth-init"
-    }));
-    assert!(!messages
-        .iter()
-        .any(|message| message["type"] == "system" && message["status"] == "auth_ok"));
-    assert!(!config_path.exists());
-}
-
-#[test]
 fn initialize_returns_system_init() {
     let msgs = run_with_input(&[
         r#"{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}"#,
@@ -212,6 +72,50 @@ fn initialize_returns_system_init() {
     assert!(init["session_id"].is_string());
     assert!(init["model"].is_string());
     assert!(init["tools"].is_array());
+}
+
+#[test]
+fn initial_extension_session_hook_is_registered_once() {
+    let home = tempfile::tempdir().expect("temp home");
+    let extension = home
+        .path()
+        .join(".copilot-shell/extensions/example.initial-hook");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "name": "example.initial-hook",
+            "version": "1.0.0",
+            "hooks": {
+                "SessionStart": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "echo '{\"system_message\":\"initial hook\"}'",
+                        "name": "initial-hook"
+                    }]
+                }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let messages = run_with_input_at_home(
+        home.path(),
+        &[
+            r#"{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}"#,
+            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
+        ],
+    );
+    let notifications = messages
+        .iter()
+        .filter(|message| {
+            message["type"] == "system"
+                && message["subtype"] == "hook_notification"
+                && message["hook_name"] == "initial-hook"
+        })
+        .count();
+
+    assert_eq!(notifications, 1, "{messages:?}");
 }
 
 #[test]
@@ -343,4 +247,73 @@ fn invalid_jsonl_input_returns_error_and_fails() {
     assert_eq!(error["subtype"], "error");
     assert_eq!(error["error_code"], "InvalidJsonlInput");
     assert_eq!(error["errors"][0], "failed to parse stdin line as JSON");
+}
+
+#[test]
+fn headless_registry_reload_publishes_into_the_live_generation() {
+    let msgs = run_with_input(&[
+        r#"{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}"#,
+        r#"{"type":"registry_request","request_id":"reg-1","domain":"extensions","action":"reload","params":null}"#,
+        r#"{"type":"registry_request","request_id":"reg-2","domain":"extensions","action":"reload","params":null}"#,
+        r#"{"type":"registry_request","request_id":"reg-3","domain":"extensions","action":"doctor","params":null}"#,
+        r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
+    ]);
+
+    let responses = msgs
+        .iter()
+        .filter(|message| message["type"] == "registry_response")
+        .collect::<Vec<_>>();
+    assert_eq!(responses.len(), 3, "{msgs:?}");
+    assert_eq!(responses[0]["success"], true, "{:?}", responses[0]);
+    assert_eq!(responses[0]["data"]["activation"], "immediate");
+    assert_eq!(responses[0]["data"]["pending"], false);
+    let first_generation = responses[0]["data"]["generation"].as_u64().unwrap();
+    let second_generation = responses[1]["data"]["generation"].as_u64().unwrap();
+    assert_eq!(second_generation, first_generation + 1);
+    assert_eq!(
+        responses[2]["data"]["runtime"]["generation"],
+        second_generation
+    );
+    assert_eq!(responses[2]["data"]["runtime"]["healthy"], true);
+    assert!(responses[2]["data"]["runtime"]["mcp_servers"].is_array());
+    assert!(responses[2]["data"]["runtime"]["agents"].is_array());
+}
+
+#[test]
+fn headless_extension_info_reports_current_runtime_projection() {
+    let home = tempfile::tempdir().expect("temp home");
+    let extension = home
+        .path()
+        .join(".copilot-shell/extensions/example.runtime");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion": 1,
+            "name": "example.runtime",
+            "version": "1.0.0",
+            "compatibility": {"cosh": ">=0.12.0"}
+        }"#,
+    )
+    .unwrap();
+    let msgs = run_with_input_at_home(
+        home.path(),
+        &[
+            r#"{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}"#,
+            r#"{"type":"registry_request","request_id":"reg-info","domain":"extensions","action":"info","params":{"name":"example.runtime"}}"#,
+            r#"{"type":"control_request","request_id":"shut-1","request":{"subtype":"shutdown"}}"#,
+        ],
+    );
+    let info = msgs
+        .iter()
+        .find(|message| message["request_id"] == "reg-info")
+        .expect("live extension info response");
+    assert_eq!(info["success"], true, "{info}");
+    assert_eq!(info["data"]["activation"], "current");
+    assert_eq!(info["data"]["effective_state"], "enabled");
+    assert_eq!(info["data"]["is_active"], true);
+    assert!(info["data"]["runtime"]["generation"].is_number());
+    assert_eq!(info["data"]["runtime"]["healthy"], true);
+    assert!(info["data"]["runtime"]["mcp_servers"].is_array());
+    assert!(info["data"]["runtime"]["agents"].is_array());
 }

@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { NavBar } from './components/NavBar';
+import { AgentHealthSidebar } from './components/AgentHealthSidebar';
 import { ConversationList } from './pages/ConversationList';
-import { AgentDashboardPage } from './pages/AgentDashboardPage';
 import { AtifViewerPage } from './pages/AtifViewerPage';
 import { TokenSavingsPage } from './pages/TokenSavingsPage';
 import { SkillMetricsPage } from './pages/SkillMetricsPage';
 import { SecurityObservabilityPage } from './pages/SecurityObservabilityPage';
 import { OptimizationPage } from './pages/OptimizationPage';
+import { AgentSessionsPage } from './pages/AgentSessionsPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { LoginPage } from './pages/LoginPage';
 import { fetchAuthStatus, fetchAuthVerify, login } from './utils/apiClient';
 
@@ -100,18 +102,22 @@ const App: React.FC = () => {
           <AuthGate>
             <div className="min-h-screen bg-gray-50 flex flex-col">
               <NavBar />
-              <main className="flex-1 overflow-auto">
-                <Routes>
-                  <Route path="/" element={<ConversationList />} />
-                  <Route path="/agents" element={<AgentDashboardPage />} />
-                  <Route path="/savings" element={<TokenSavingsPage />} />
-                  <Route path="/optimization" element={<OptimizationPage />} />
-                  <Route path="/optimization/:sessionId" element={<OptimizationPage />} />
-                  <Route path="/skills" element={<SkillMetricsPage />} />
-                  <Route path="/security" element={<SecurityObservabilityPage />} />
-                  <Route path="/atif" element={<AtifViewerPage />} />
-                </Routes>
-              </main>
+              <div className="flex flex-1 overflow-hidden">
+                <main className="flex-1 overflow-auto">
+                  <Routes>
+                    <Route path="/" element={<ConversationList />} />
+                    <Route path="/sessions" element={<AgentSessionsPage />} />
+                    <Route path="/savings" element={<TokenSavingsPage />} />
+                    <Route path="/optimization" element={<OptimizationPage />} />
+                    <Route path="/optimization/:sessionId" element={<OptimizationPage />} />
+                    <Route path="/skills" element={<SkillMetricsPage />} />
+                    <Route path="/security" element={<SecurityObservabilityPage />} />
+                    <Route path="/atif" element={<AtifViewerPage />} />
+                    <Route path="/settings" element={<SettingsPage />} />
+                  </Routes>
+                </main>
+                <AgentHealthSidebar />
+              </div>
             </div>
           </AuthGate>
         } />

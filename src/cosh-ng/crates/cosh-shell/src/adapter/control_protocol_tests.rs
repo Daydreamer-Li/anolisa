@@ -17,12 +17,24 @@ fn parse_can_use_tool() {
             tool_input,
             tool_use_id,
             hook_requires_approval,
+            ..
         } => {
             assert_eq!(request_id, "req-1");
             assert_eq!(tool_name, "Bash");
             assert_eq!(tool_input["command"], "echo hello");
             assert_eq!(tool_use_id, "toolu_xxx");
             assert!(!hook_requires_approval);
+        }
+        _ => panic!("expected CanUseTool"),
+    }
+}
+
+#[test]
+fn parse_can_use_tool_preserves_audit_reference() {
+    let line = r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo hello"},"tool_use_id":"toolu_xxx","audit_ref":"audit-event-1"}}"#;
+    match parse_control_request(line).expect("parse audit-linked approval") {
+        ControlRequest::CanUseTool { audit_ref, .. } => {
+            assert_eq!(audit_ref.as_deref(), Some("audit-event-1"));
         }
         _ => panic!("expected CanUseTool"),
     }
@@ -833,13 +845,11 @@ fn parse_auth_required() {
             request_id,
             reason,
             error_message,
-            credentials_unavailable,
             providers,
         } => {
             assert_eq!(request_id, "auth-init");
             assert_eq!(reason, "not_configured");
             assert!(error_message.is_none());
-            assert!(!credentials_unavailable);
             assert_eq!(providers.len(), 2);
             assert_eq!(providers[0].id, "dashscope");
             assert_eq!(providers[0].label, "DashScope");
@@ -866,14 +876,7 @@ fn parse_auth_required() {
 fn serialize_auth_response_format() {
     let mut values = HashMap::new();
     values.insert("api_key".to_string(), "sk-test".to_string());
-    let s = serialize_auth_response(
-        "auth-init",
-        "qwen-prod",
-        Some("dashscope"),
-        &values,
-        true,
-        false,
-    );
+    let s = serialize_auth_response("auth-init", "qwen-prod", Some("dashscope"), &values, true);
     let v: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(v["type"], "control_response");
     assert_eq!(v["response"]["subtype"], "success");
@@ -882,8 +885,4 @@ fn serialize_auth_response_format() {
     assert_eq!(v["response"]["response"]["provider_type"], "dashscope");
     assert_eq!(v["response"]["response"]["values"]["api_key"], "sk-test");
     assert_eq!(v["response"]["response"]["persist"], true);
-    assert_eq!(
-        v["response"]["response"]["reset_unavailable_credentials"],
-        false
-    );
 }

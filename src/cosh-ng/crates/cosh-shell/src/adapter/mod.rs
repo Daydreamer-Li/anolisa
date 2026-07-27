@@ -20,6 +20,7 @@ mod cosh_core_process;
 mod cosh_core_registry;
 #[cfg(test)]
 mod cosh_core_registry_tests;
+mod cosh_core_service;
 #[cfg(test)]
 mod cosh_core_tests;
 mod fake;
@@ -38,6 +39,7 @@ pub use cosh_core::{
     SessionClearResult, SessionErrorInfo, SessionHealth, SessionList, SessionManagementClient,
     SessionRecovery, SessionRecoveryState, SessionRuntimeState, SessionSummary,
 };
+pub(crate) use cosh_core_registry::RegistryQueryError;
 pub use fake::FakeAgentAdapter;
 pub(crate) use process::{
     agent_event_is_provider_progress, record_cancellation_pending_session,
@@ -54,6 +56,18 @@ pub use qwen::QwenCliAdapter;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterError {
     pub message: String,
+}
+
+/// Result of detaching an adapter from its current provider session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FreshSessionOutcome {
+    /// Provider-session bindings were cleared; the next request starts fresh.
+    ///
+    /// `previous_session_id` is the id we detached from, or `None` when no
+    /// session was bound — the detach is idempotent either way.
+    Detached { previous_session_id: Option<String> },
+    /// The adapter has no resumable provider-session concept to detach.
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -373,6 +387,20 @@ impl AdapterInstance {
         }
     }
 
+    /// Detaches the adapter from its current provider session so the next
+    /// Agent request starts a fresh conversation, without deleting or
+    /// rewriting any persisted session.
+    pub(crate) fn start_fresh_session(&self) -> FreshSessionOutcome {
+        match self {
+            Self::ClaudeCode(adapter) => adapter.start_fresh_session(),
+            Self::QwenCli(adapter) => adapter.start_fresh_session(),
+            Self::CoshCore(adapter) => adapter.start_fresh_session(),
+            // The fake adapter never resumes a provider session, so there is
+            // nothing to detach; report unsupported rather than faking success.
+            Self::Fake(_) => FreshSessionOutcome::Unsupported,
+        }
+    }
+
     pub fn provider_invocation(&self) -> Option<String> {
         match self {
             Self::ClaudeCode(adapter) => Some(adapter.program.clone()),
@@ -380,6 +408,21 @@ impl AdapterInstance {
             Self::CoshCore(adapter) => Some(adapter.program.clone()),
             Self::Fake(_) => None,
         }
+    }
+}
+
+/// Detaches an adapter that tracks a single committed session id behind a
+/// mutex (Claude/Qwen). Clears the id so the next `prepare_invocation` omits
+/// `--resume`, and reports the id we detached from.
+pub(super) fn detach_committed_session(
+    committed: &Arc<Mutex<Option<String>>>,
+) -> FreshSessionOutcome {
+    let previous_session_id = committed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    FreshSessionOutcome::Detached {
+        previous_session_id,
     }
 }
 

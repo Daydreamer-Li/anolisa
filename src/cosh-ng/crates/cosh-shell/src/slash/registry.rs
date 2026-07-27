@@ -74,11 +74,19 @@ pub fn slash_command_registry() -> &'static [SlashCommandSpec] {
         },
         SlashCommandSpec {
             name: "/session",
-            usage: "/session [status|list|resume <id>|clear <id>...|clear --all|compact [status|cancel]]",
+            usage: "/session [new|status|list|resume <id>|clear <id>...|clear --all|compact [status|cancel]]",
             summary_id: MessageId::HelpSummarySession,
             group: Some("Sessions"),
             scope: "session",
             state: SlashCommandState::Public,
+        },
+        SlashCommandSpec {
+            name: "/new",
+            usage: "/new",
+            summary_id: MessageId::HelpSummarySession,
+            group: None,
+            scope: "session",
+            state: SlashCommandState::Hidden,
         },
         SlashCommandSpec {
             name: "/resume",
@@ -146,7 +154,7 @@ pub fn slash_command_registry() -> &'static [SlashCommandSpec] {
         },
         SlashCommandSpec {
             name: "/audit",
-            usage: "/audit",
+            usage: "/audit status|trace current|export current <dir>",
             summary_id: MessageId::HelpSummaryAudit,
             group: None,
             scope: "read-only",
@@ -162,7 +170,7 @@ pub fn slash_command_registry() -> &'static [SlashCommandSpec] {
         },
         SlashCommandSpec {
             name: "/extensions",
-            usage: "/extensions [list|detail] [name]",
+            usage: "/extensions <command> [options]",
             summary_id: MessageId::HelpSummaryExtensions,
             group: Some("Registry"),
             scope: "config",
@@ -341,7 +349,7 @@ mod tests {
         assert!(visible.contains(&"/config language [auto|en-US|zh-CN]"));
         assert!(visible
             .iter()
-            .any(|usage| usage.starts_with("/session [status|list|resume")));
+            .any(|usage| usage.starts_with("/session [new|status|list|resume")));
         assert!(visible.contains(&"/mode approval [recommend|auto|trust]"));
         assert!(visible.contains(&"/mode analysis [smart|auto|manual]"));
         assert!(visible.contains(&"/hooks"));
@@ -392,6 +400,7 @@ mod tests {
             "/send-to-shell",
             "/debug",
             "/resume",
+            "/new",
             "/skill",
             "/approval-mode",
             "/allow",
@@ -428,7 +437,12 @@ mod tests {
     #[test]
     fn shell_marker_exact_tokens_match_registry() {
         let registry = exact_slash_control_commands().collect::<BTreeSet<_>>();
-        let marker = include_str!("../shell_host/marker.rs");
+        // Marker scripts live in per-shell owner files under shell_host/marker/.
+        let marker = concat!(
+            include_str!("../shell_host/marker/bash.rs"),
+            "\n",
+            include_str!("../shell_host/marker/zsh.rs")
+        );
         let marker_tokens = marker
             .lines()
             .map(str::trim)

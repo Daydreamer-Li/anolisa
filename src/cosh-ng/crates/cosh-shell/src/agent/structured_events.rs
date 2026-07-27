@@ -73,7 +73,8 @@ pub(crate) fn render_agent_structured_events<W: Write>(
         }
         return Ok(());
     }
-    crate::auth::runtime::render_auth_events(state, governed_events, output)?;
+    let auth_ids = crate::auth::runtime::record_auth_required(state, governed_events);
+    crate::auth::runtime::render_auth_panel(state, &auth_ids, output)?;
     if render_trusted_tool(state, governed_events, run_request, origin, output, adapter)? {
         return Ok(());
     }
@@ -90,6 +91,21 @@ pub(crate) fn render_agent_structured_events<W: Write>(
         origin,
         ignore_tool_calls,
     );
+    // Turn-scope batch consent (issue #1773): newly recorded requests from
+    // the consented run are resolved through the same pipeline as a user
+    // decision before the next card is presented; anything left pending
+    // (high risk, hooks, other runs) falls through to the card flow.
+    if let Some(run_id) = state.control.trust.run_batch_consent().map(str::to_string) {
+        crate::approval::runtime::sweep_batch_consented_requests(
+            &run_id, None, adapter, state, output,
+        )?;
+    }
+    // New arrivals can change the active card's contract (queue counter,
+    // turn-consent action set): repaint it so the user always decides on
+    // the current queue state.
+    if !approval_ids.is_empty() && state.approvals.active_panel_id.is_some() {
+        crate::approval::panel::redraw_current_approval_request(state, output)?;
+    }
     render_approval_requests(state, &approval_ids, output)?;
     Ok(())
 }
@@ -165,6 +181,7 @@ mod tests {
                 tool_input: serde_json::json!({ "command": "rm -f /tmp/example" }),
                 tool_use_id: "tool-1".to_string(),
                 hook_requires_approval: false,
+                audit_ref: None,
             },
             GovernancePolicyDecision::NeedsUserApproval,
         );
@@ -174,7 +191,6 @@ mod tests {
                 request_id: "auth-1".to_string(),
                 reason: "credentials required".to_string(),
                 error_message: None,
-                credentials_unavailable: false,
                 providers: Vec::new(),
             },
             GovernancePolicyDecision::DisplayOnly,

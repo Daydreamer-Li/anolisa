@@ -1,6 +1,27 @@
 use super::{CardInputState, RawInputCapture, RawInputEvent};
 
 #[test]
+fn submitted_capture_preserves_same_read_suffix() {
+    let capture = RawInputCapture::Question {
+        id: "question-1".to_string(),
+        option_count: 0,
+        allow_free_text: true,
+        multiple: false,
+        secret: false,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&capture);
+
+    let (events, remainder) = state.consume_split(&capture, b"yes\nWho are you\n");
+
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardAnswer("yes".to_string()))
+    );
+    assert_eq!(remainder, b"Who are you\n");
+}
+
+#[test]
 fn question_capture_custom_option_waits_for_text_before_submit() {
     let capture = RawInputCapture::Question {
         id: "q-1".to_string(),
@@ -30,9 +51,9 @@ fn question_capture_custom_option_waits_for_text_before_submit() {
 }
 
 #[test]
-fn question_capture_preserves_answer_for_delivery_retry() {
+fn question_capture_clears_free_text_after_submit() {
     let capture = RawInputCapture::Question {
-        id: "q-retry".to_string(),
+        id: "q-clear".to_string(),
         option_count: 0,
         allow_free_text: true,
         multiple: false,
@@ -45,9 +66,38 @@ fn question_capture_preserves_answer_for_delivery_retry() {
         state.consume(&capture, b"main\n").last(),
         Some(&RawInputEvent::CardAnswer("main".to_string()))
     );
+    // free_text is cleared after submit; a second Enter must NOT replay the
+    // previous answer.
     assert_eq!(
         state.consume(&capture, b"\n"),
-        vec![RawInputEvent::CardAnswer("main".to_string())]
+        vec![RawInputEvent::QuestionSubmitAttempt("q-clear".to_string())]
+    );
+}
+
+#[test]
+fn question_capture_emits_one_submission_per_input_batch() {
+    let capture = RawInputCapture::Question {
+        id: "q-burst".to_string(),
+        option_count: 0,
+        allow_free_text: true,
+        multiple: false,
+        secret: false,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&capture);
+
+    let events = state.consume(&capture, b"main\n\n");
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, RawInputEvent::CardAnswer(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        state.consume(&capture, b"\n"),
+        vec![RawInputEvent::QuestionSubmitAttempt("q-burst".to_string())]
     );
 }
 
@@ -253,7 +303,7 @@ fn question_capture_ignores_removed_answer_slash() {
 fn approval_capture_ignores_removed_decision_slashes() {
     let capture = RawInputCapture::Approval {
         id: "req-1".to_string(),
-        is_hook: false,
+        action_set: crate::ui::ApprovalActionSet::Standard,
     };
     let mut state = CardInputState::default();
     state.apply_capture(&capture);
@@ -422,10 +472,7 @@ fn mode_capture_supports_escape_and_ctrl_c_cancel() {
 
     assert_eq!(
         state.consume(&capture, b"\x1b\x1b\x03"),
-        vec![
-            RawInputEvent::ModeCancel("mode".to_string()),
-            RawInputEvent::ModeCancel("mode".to_string()),
-        ]
+        vec![RawInputEvent::ModeCancel("mode".to_string())]
     );
 }
 
@@ -536,11 +583,111 @@ fn session_clear_confirmation_accepts_and_cancels() {
     );
 }
 
+/// TurnConsent 动作集（issue #1773）：线性索引到达 index 1 时回车产生
+/// CardApproveTurn；max index 为 4（Details），不受渲染折行影响。
+#[test]
+fn approval_capture_turn_consent_selects_approve_turn_and_details() {
+    let capture = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::TurnConsent,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&capture);
+
+    assert_eq!(
+        state.consume(&capture, b"\x1b[C\n"),
+        vec![
+            RawInputEvent::CardFocus("req-1".to_string(), 1),
+            RawInputEvent::CardApproveTurn("req-1".to_string())
+        ]
+    );
+
+    let mut state = CardInputState::default();
+    state.apply_capture(&capture);
+    // 右移 6 次在 max index 4（Details）处饱和。
+    let events = state.consume(&capture, b"\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\n");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardDetails("req-1".to_string()))
+    );
+}
+
+/// 已有焦点后新请求到达（Standard -> TurnConsent）：选择索引按动作值重映射，
+/// 回车提交的仍是切换前高亮的动作，而不是新动作集里同索引的动作。
+#[test]
+fn approval_capture_remaps_selection_when_action_set_switches() {
+    let standard = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::Standard,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&standard);
+    // 右移两次到 Deny（Standard index 2）。
+    state.consume(&standard, b"\x1b[C\x1b[C");
+
+    // 第二个同 run 请求到达，同一张卡切到 TurnConsent（Deny 变为 index 3）。
+    let turn = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::TurnConsent,
+    };
+    state.apply_capture(&turn);
+    assert_eq!(
+        state.consume(&turn, b"\n"),
+        vec![RawInputEvent::CardDeny("req-1".to_string())]
+    );
+}
+
+/// 反向收缩（TurnConsent -> Standard）：原选中动作在新动作集缺失
+/// （ApproveTurn）时回退到 Approve，与渲染侧 focus 回退一致。
+#[test]
+fn approval_capture_action_set_shrink_falls_back_to_approve() {
+    let turn = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::TurnConsent,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&turn);
+    // 右移到 ApproveTurn（TurnConsent index 1）。
+    state.consume(&turn, b"\x1b[C");
+
+    let standard = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::Standard,
+    };
+    state.apply_capture(&standard);
+    assert_eq!(
+        state.consume(&standard, b"\n"),
+        vec![RawInputEvent::CardApprove("req-1".to_string())]
+    );
+}
+
+/// 不同 id 的审批卡切换不走重映射：选择照常重置。
+#[test]
+fn approval_capture_new_card_resets_selection() {
+    let first = RawInputCapture::Approval {
+        id: "req-1".to_string(),
+        action_set: crate::ui::ApprovalActionSet::TurnConsent,
+    };
+    let mut state = CardInputState::default();
+    state.apply_capture(&first);
+    state.consume(&first, b"\x1b[C\x1b[C\x1b[C");
+
+    let second = RawInputCapture::Approval {
+        id: "req-2".to_string(),
+        action_set: crate::ui::ApprovalActionSet::Standard,
+    };
+    state.apply_capture(&second);
+    assert_eq!(
+        state.consume(&second, b"\n"),
+        vec![RawInputEvent::CardApprove("req-2".to_string())]
+    );
+}
+
 #[test]
 fn approval_capture_handles_split_escape_arrow_sequence() {
     let capture = RawInputCapture::Approval {
         id: "req-1".to_string(),
-        is_hook: false,
+        action_set: crate::ui::ApprovalActionSet::Standard,
     };
     let mut state = CardInputState::default();
     state.apply_capture(&capture);
@@ -559,15 +706,19 @@ fn approval_capture_handles_split_escape_arrow_sequence() {
 fn approval_capture_escape_then_enter_cancels_without_submit() {
     let capture = RawInputCapture::Approval {
         id: "req-1".to_string(),
-        is_hook: false,
+        action_set: crate::ui::ApprovalActionSet::Standard,
     };
     let mut state = CardInputState::default();
     state.apply_capture(&capture);
 
-    assert_eq!(
-        state.consume(&capture, b"\x1b"),
-        vec![RawInputEvent::CardCancel("req-1".to_string())]
-    );
+    let (events, remainder) = state.consume_split(&capture, b"\x1b");
+    assert_eq!(events, vec![RawInputEvent::CardCancel("req-1".to_string())]);
+    assert!(remainder.is_empty());
+
+    state.apply_capture(&capture);
+    let (events, remainder) = state.consume_split(&capture, b"\x1bxnext");
+    assert_eq!(events, vec![RawInputEvent::CardCancel("req-1".to_string())]);
+    assert_eq!(remainder, b"xnext");
 }
 
 #[test]
@@ -617,5 +768,121 @@ fn evidence_capture_sends_ignores_and_cancels() {
     assert_eq!(
         state.consume(&capture, &[0x03]),
         vec![RawInputEvent::EvidenceCancel("evidence-1".to_string())]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// free_text must not carry over across capture switches or repeated submits
+// ---------------------------------------------------------------------------
+
+/// Helper: create a free-text Question capture with the given ID.
+fn text_question(id: &str, secret: bool) -> RawInputCapture {
+    RawInputCapture::Question {
+        id: id.to_string(),
+        option_count: 0,
+        allow_free_text: true,
+        multiple: false,
+        secret,
+    }
+}
+
+#[test]
+fn submit_clears_free_text_for_next_capture() {
+    // After submitting an answer on one capture and switching to a new
+    // capture, the new capture must start with an empty free_text buffer.
+    let cap_a = text_question("q-a", false);
+    let cap_b = text_question("q-b", false);
+    let mut state = CardInputState::default();
+
+    state.apply_capture(&cap_a);
+    let events = state.consume(&cap_a, b"answer-a\n");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardAnswer("answer-a".to_string()))
+    );
+
+    // reset() is called by consume_captured_input on release
+    state.reset();
+
+    state.apply_capture(&cap_b);
+    let events = state.consume(&cap_b, b"x");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardInput(
+            "q-b".to_string(),
+            "x".to_string()
+        ))
+    );
+}
+
+#[test]
+fn apply_capture_clears_free_text_when_id_changes_without_reset() {
+    // apply_capture alone (without reset) must clear free_text when the
+    // capture ID changes. This covers the direct Capture→Capture transition
+    // path in mode.rs where reset() is NOT called.
+    let cap_a = text_question("q-a", false);
+    let cap_b = text_question("q-b", false);
+    let mut state = CardInputState::default();
+
+    state.apply_capture(&cap_a);
+    state.consume(&cap_a, b"answer-a");
+    // Do NOT call reset() — simulate direct Capture→Capture transition
+    state.apply_capture(&cap_b);
+    let events = state.consume(&cap_b, b"x");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardInput(
+            "q-b".to_string(),
+            "x".to_string()
+        ))
+    );
+}
+
+#[test]
+fn second_submit_on_same_capture_yields_empty_attempt() {
+    // After submitting on a capture, a second Enter must produce an
+    // empty submit attempt, not a replay of the previous answer.
+    let capture = text_question("q-a", false);
+    let mut state = CardInputState::default();
+    state.apply_capture(&capture);
+
+    let (events, remainder) = state.consume_split(&capture, b"answer-a\n");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardAnswer("answer-a".to_string()))
+    );
+    assert!(remainder.is_empty());
+
+    // free_text must be empty after submit — second Enter yields an attempt
+    let (events, _) = state.consume_split(&capture, b"\n");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::QuestionSubmitAttempt("q-a".to_string()))
+    );
+}
+
+#[test]
+fn secret_submit_clears_free_text_for_next_capture() {
+    // Secret captures must also clear free_text after submit.
+    let cap_secret = text_question("q-secret", true);
+    let cap_next = text_question("q-next", false);
+    let mut state = CardInputState::default();
+
+    state.apply_capture(&cap_secret);
+    let events = state.consume(&cap_secret, b"sk-secret\n");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardSecretAnswer("sk-secret".to_string()))
+    );
+
+    state.reset();
+    state.apply_capture(&cap_next);
+    let events = state.consume(&cap_next, b"plain");
+    assert_eq!(
+        events.last(),
+        Some(&RawInputEvent::CardInput(
+            "q-next".to_string(),
+            "plain".to_string()
+        ))
     );
 }

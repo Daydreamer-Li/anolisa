@@ -1,6 +1,7 @@
 use super::marker::{bash_marker_script, zsh_marker_script};
 use super::model::{ShellEnvironmentObserver, ShellHistoryFileObserver};
 use super::osc::*;
+use crate::ledger::build_command_blocks;
 use crate::types::{
     CommandOrigin, ShellEventKind, ShellHandoffRequest, COMMAND_OUTPUT_REF_MAX_BYTES,
     SESSION_OUTPUT_REF_MAX_BYTES,
@@ -9,6 +10,51 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 const TEST_MARKER_TOKEN: &str = "test-marker-token";
+
+#[test]
+fn routing_markers_require_matching_attempt_generation() {
+    let mut parser = parser_for_test("routing-generation");
+    parser
+        .feed(b"\x1b]1337;COSH;{\"event\":\"preexec\",\"token\":\"test-marker-token\",\"session_id\":\"routing-generation\",\"command\":\"Who are you\",\"cwd\":\"/tmp\",\"generation\":2}\x07")
+        .expect("feed preexec");
+    parser
+        .feed(b"\x1b]1337;COSH;{\"event\":\"top_level_missing\",\"token\":\"test-marker-token\",\"session_id\":\"routing-generation\",\"generation\":1,\"proven\":true,\"intent\":\"ambiguous\",\"sensitive\":false,\"unsafe\":false}\x07")
+        .expect("feed stale provenance");
+    parser
+        .feed(b"\x1b]1337;COSH;{\"event\":\"intercept\",\"token\":\"test-marker-token\",\"session_id\":\"routing-generation\",\"command\":\"stale input\",\"reason\":\"natural_language\",\"generation\":1,\"top_level_missing\":true}\x07")
+        .expect("feed stale intercept");
+
+    let stale = parser
+        .events
+        .iter()
+        .find(|event| event.kind == ShellEventKind::CommandRoutingObserved)
+        .expect("stale provenance event");
+    assert!(stale.command_id.is_none());
+    assert!(stale.routing.as_ref().is_some_and(|routing| {
+        routing.top_level_missing && !routing.proven && routing.generation == 1
+    }));
+    assert!(!parser.events.iter().any(|event| {
+        event.kind == ShellEventKind::UserInputIntercepted
+            && event.input.as_deref() == Some("stale input")
+    }));
+
+    parser
+        .feed(b"\x1b]1337;COSH;{\"event\":\"intercept\",\"token\":\"test-marker-token\",\"session_id\":\"routing-generation\",\"command\":\"Who are you\",\"reason\":\"natural_language\",\"generation\":2,\"top_level_missing\":true}\x07")
+        .expect("feed matching intercept");
+
+    let intercept = parser
+        .events
+        .iter()
+        .find(|event| {
+            event.kind == ShellEventKind::UserInputIntercepted
+                && event.input.as_deref() == Some("Who are you")
+        })
+        .expect("matching intercept");
+    assert_eq!(intercept.command_id.as_deref(), Some("cmd-1"));
+    let ledger = build_command_blocks(&parser.events);
+    assert!(ledger.errors.is_empty(), "{:?}", ledger.errors);
+    assert!(ledger.blocks.is_empty());
+}
 
 #[test]
 fn trusted_history_file_marker_is_private_and_observed() {
@@ -67,6 +113,45 @@ fn bash_history_file_marker_is_native_only() {
 }
 
 #[test]
+fn bash_extdebug_does_not_leak_via_exported_bashopts() {
+    let script = bash_marker_script();
+
+    // extdebug lands in BASHOPTS; when BASHOPTS arrived exported from the
+    // environment it stays exported (readonly keeps -x), leaking extdebug to
+    // every child bash which then fails to load bashdb on hosts without it.
+    // The user rcfile runs before this hook setup, so its DEBUG trap is live
+    // in between: the export attribute must be dropped *before* extdebug is
+    // enabled, or a trap-spawned child inherits the leak.
+    let shopt = script
+        .find("shopt -s extdebug")
+        .expect("extdebug setup should exist");
+    let unexport = script
+        .find("export -n BASHOPTS 2>/dev/null || true")
+        .expect("BASHOPTS export attribute must be dropped before enabling extdebug");
+    assert!(
+        unexport < shopt,
+        "export -n BASHOPTS must precede shopt -s extdebug"
+    );
+
+    // The unexport must land in the same hook-setup block, before the DEBUG
+    // trap is (re-)installed there, so no child spawned afterwards sees the
+    // leak. Anchor on the trap occurrence after the shopt line: earlier
+    // occurrences live inside recovery helper functions.
+    let debug_trap = script[shopt..]
+        .find("trap '_cosh_preexec_marker' DEBUG")
+        .map(|offset| shopt + offset)
+        .expect("hook-setup DEBUG trap installation should exist");
+    assert!(
+        unexport < debug_trap,
+        "export -n BASHOPTS must precede the DEBUG trap installation"
+    );
+
+    // BASHOPTS/extdebug are bash-only mechanisms; the zsh marker must not
+    // grow references to them.
+    assert!(!zsh_marker_script().contains("BASHOPTS"));
+}
+
+#[test]
 fn bash_preexec_marker_skips_completion_with_comp_type_guard() {
     let script = bash_marker_script();
 
@@ -88,6 +173,48 @@ fn bash_preexec_marker_skips_completion_with_comp_type_guard() {
         guard < trap_snapshot,
         "completion guard should precede heavy trap snapshot logic"
     );
+}
+
+#[test]
+fn prompt_ready_markers_follow_user_prompt_hooks() {
+    let bash = bash_marker_script();
+    let prompt_command = bash
+        .find("_cosh_run_user_prompt_command \"$status\"")
+        .expect("bash user prompt command");
+    let bash_ready = bash
+        .find("_cosh_emit_marker \"prompt_ready\"")
+        .expect("bash prompt-ready marker");
+    assert!(prompt_command < bash_ready);
+
+    let zsh = zsh_marker_script();
+    let precmd = zsh
+        .find("_cosh_emit_marker \"precmd\"")
+        .expect("zsh precmd marker");
+    let zsh_ready = zsh
+        .find("_cosh_emit_marker \"prompt_ready\"")
+        .expect("zsh prompt-ready marker");
+    assert!(precmd < zsh_ready);
+    assert!(zsh[..zsh_ready].ends_with(
+        "if [[ \"${precmd_functions[-1]:-}\" == \"_cosh_precmd_marker\" ]]; then\n    "
+    ));
+}
+
+#[test]
+fn prompt_hook_output_does_not_count_as_a_painted_prompt() {
+    let mut parser = parser_for_test("prompt-ready");
+    feed_precmd(&mut parser, 0);
+
+    parser
+        .feed(b"hook output")
+        .expect("feed prompt hook output");
+    assert!(!parser.has_prompt_painted_since_ready());
+
+    let ready = b"\x1b]1337;COSH;{\"event\":\"prompt_ready\",\"token\":\"test-marker-token\"}\x07";
+    parser.feed(ready).expect("feed prompt-ready marker");
+    assert!(!parser.has_prompt_painted_since_ready());
+
+    parser.feed(b"prompt> ").expect("feed prompt paint");
+    assert!(parser.has_prompt_painted_since_ready());
 }
 
 #[test]

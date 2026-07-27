@@ -54,7 +54,15 @@ fn split_prefix(line: &str) -> (String, String, &str) {
     } else if let Some(rest) = line.strip_prefix("> ") {
         ("> ".to_string(), "  ".to_string(), rest)
     } else if line.starts_with("  ") {
-        ("  ".to_string(), "  ".to_string(), line.trim_start())
+        // Preserve arbitrary-width space indentation (2, 4, 6, ... columns)
+        // instead of collapsing everything to two spaces, so nested panel
+        // hierarchies survive wrapping with a matching hanging indent. Only
+        // consecutive ASCII spaces count as indentation: control whitespace
+        // (\r, \t, \n) after the spaces must never enter the hanging prefix,
+        // and the body keeps the legacy full leading-whitespace cleanup.
+        let indent_len = line.len() - line.trim_start_matches(' ').len();
+        let indent = &line[..indent_len];
+        (indent.to_string(), indent.to_string(), line.trim_start())
     } else {
         ("".to_string(), "".to_string(), line.trim_start())
     }

@@ -261,7 +261,6 @@ pub(crate) fn remember_agent_activity(active_run: &mut ActiveAgentRun, governed:
                 active_run.current_phase = "auth".to_string();
                 active_run.current_message = "Authentication credentials required".to_string();
             }
-            AgentEvent::AuthResult { .. } => {}
             AgentEvent::ShellEvidenceRequest { action, .. } => {
                 active_run.current_phase = i18n.t(MessageId::AgentStatusTool).to_string();
                 active_run.current_message =
@@ -366,6 +365,7 @@ mod tests {
                     terminal_output_bytes: 0,
                 },
                 shell_environment_generation: None,
+                audit_identity: None,
             },
             context_blocks: Vec::new(),
             context_hints: Vec::new(),
@@ -718,6 +718,7 @@ mod tests {
                     }),
                     tool_use_id: "toolu-write".to_string(),
                     hook_requires_approval: false,
+                    audit_ref: None,
                 },
                 reason: "approval".to_string(),
                 display_text: String::new(),
@@ -746,6 +747,7 @@ mod tests {
                     tool_input: serde_json::json!({ "file_path": "a.md" }),
                     tool_use_id: String::new(),
                     hook_requires_approval: false,
+                    audit_ref: None,
                 },
                 reason: "approval".to_string(),
                 display_text: String::new(),
@@ -761,6 +763,7 @@ mod tests {
                     tool_input: serde_json::json!({ "file_path": "b.md" }),
                     tool_use_id: String::new(),
                     hook_requires_approval: false,
+                    audit_ref: None,
                 },
                 reason: "approval".to_string(),
                 display_text: String::new(),

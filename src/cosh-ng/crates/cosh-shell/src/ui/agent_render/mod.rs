@@ -13,25 +13,34 @@ use crate::types::{AgentEvent, GovernedEvent};
 mod actions;
 mod activity;
 mod approval;
+mod approval_actions;
 mod approval_details;
 mod approval_journal;
+mod approval_reason;
 mod approval_receipt;
 mod card;
 mod consultation;
 mod health;
 mod health_labels;
+mod help;
+#[cfg(test)]
+mod help_tests;
+mod hook_status;
+#[cfg(test)]
+mod hook_status_tests;
 mod markdown;
 mod notice;
 mod question;
 mod recommendation;
+mod reference_style;
 mod status;
 mod stream;
 mod wrap;
 
 pub use actions::{
     approval_action_at, approval_action_index, hook_approval_action_at,
-    hook_approval_action_max_index, ApprovalActionDescriptor, ApprovalPanelAction,
-    APPROVAL_PANEL_ACTIONS,
+    hook_approval_action_max_index, pack_action_rows, ApprovalActionDescriptor, ApprovalActionSet,
+    ApprovalPanelAction, APPROVAL_PANEL_ACTIONS, TURN_APPROVAL_PANEL_ACTIONS,
 };
 pub use activity::{
     ActivityDetailsPanelModel, ActivityPanelModel, ActivityRowModel, ActivityToolRowModel,
@@ -41,10 +50,13 @@ pub(crate) use approval::hook_warning_icon;
 pub use approval::{ApprovalPanelModel, HookWarningView};
 pub use approval_details::{ApprovalDetailsPanelModel, CommandAssessmentSummaryModel};
 pub use approval_journal::{ApprovalJournalEntryModel, ApprovalJournalPanelModel};
+pub(crate) use approval_reason::{card_reason_phrase, CARD_REASON_PHRASE_MAX_WIDTH};
 pub use approval_receipt::ApprovalReceiptPanelModel;
 pub use consultation::ConsultationCardModel;
 pub use health::HealthBannerModel;
 pub(crate) use health::{health_uses_startup_row, primary_health_prompt_suggestion};
+pub(crate) use help::{HelpPanelEntry, HelpPanelGroup, HelpPanelModel};
+pub(crate) use hook_status::{AgentHooksView, HookEntryView, HookEventGroup, HookStatusPanelModel};
 use markdown::MarkdownRenderModel;
 pub use notice::NoticePanelModel;
 pub use question::{
@@ -315,11 +327,15 @@ impl RatatuiInlineRenderer {
     fn rich_block_lines(&self, title: &str, body: Vec<String>) -> Vec<String> {
         let width = self.panel_standard_width();
         let inner_width = width.saturating_sub(4).max(1) as usize;
-        let content_height = body
+        // Pre-wrap with wrap_plain_line so leading indentation survives and
+        // continuation lines keep a hanging indent. Paragraph must not re-wrap:
+        // ratatui's `Wrap { trim: true }` strips leading whitespace, which
+        // flattens intentional hierarchy (e.g. /help group headers vs entries).
+        let wrapped = body
             .iter()
-            .map(|line| wrap_plain_line(line, inner_width).len().max(1))
-            .sum::<usize>()
-            .max(1);
+            .flat_map(|line| wrap_plain_line(line, inner_width))
+            .collect::<Vec<_>>();
+        let content_height = wrapped.len().max(1);
         let height = content_height.saturating_add(2).min(200) as u16;
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
@@ -333,14 +349,12 @@ impl RatatuiInlineRenderer {
         let inner = block.inner(area);
         block.render(area, &mut buffer);
 
-        let text = if body.is_empty() {
+        let text = if wrapped.is_empty() {
             Text::from(Line::from(""))
         } else {
-            Text::from(body.into_iter().map(Line::from).collect::<Vec<_>>())
+            Text::from(wrapped.into_iter().map(Line::from).collect::<Vec<_>>())
         };
-        Paragraph::new(text)
-            .wrap(Wrap { trim: true })
-            .render(inner, &mut buffer);
+        Paragraph::new(text).render(inner, &mut buffer);
 
         if self.styles_enabled() {
             buffer_to_styled_lines(&buffer, area)
@@ -376,11 +390,20 @@ impl RatatuiInlineRenderer {
         } else {
             Text::from(body)
         };
+        // `Wrap { trim: false }` keeps leading whitespace intact, so pre-wrapped
+        // callers (help panel) keep their indentation while unwrapped styled
+        // markdown content (plain paragraphs, list items) still wraps instead
+        // of being truncated. `trim: true` must not come back: it strips the
+        // indentation hierarchy.
         Paragraph::new(text)
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .render(inner, &mut buffer);
 
-        buffer_to_styled_lines(&buffer, area)
+        if self.styles_enabled() {
+            buffer_to_styled_lines(&buffer, area)
+        } else {
+            buffer_to_lines(&buffer, area)
+        }
     }
 
     pub(crate) fn panel_standard_width(&self) -> u16 {

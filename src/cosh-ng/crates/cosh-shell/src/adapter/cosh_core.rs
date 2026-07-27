@@ -13,14 +13,15 @@ use super::cosh_core_process::{
     run_sync_cosh_core_process, start_control_protocol_cosh_core_process,
     suppress_synthetic_completion_after_transport_failure,
 };
-use super::prompt::provider_prompt_contract_with_evidence_access;
+use super::cosh_core_service::PersistentCoshCoreRuntime;
+use super::prompt::provider_prompt_contract_for_request_with_evidence_access;
 use super::{
     agent_event_is_provider_progress, control_protocol, prompt_from_request_with_evidence_policy,
     record_cancellation_pending_session, run_provider_process_loop, spawn_provider_child,
     start_threaded_adapter_run, AdapterError, AdapterInstance, AgentAdapter,
-    AgentBackendCapabilities, AgentRunHandle, ClaudeStreamParser, PreparedInvocation,
-    ProviderCancellationArtifactStore, ProviderLineProgress, ProviderPromptArgMode,
-    ProviderRunOutcome, ProviderStdinMode,
+    AgentBackendCapabilities, AgentRunHandle, ClaudeStreamParser, FreshSessionOutcome,
+    PreparedInvocation, ProviderCancellationArtifactStore, ProviderLineProgress,
+    ProviderPromptArgMode, ProviderRunOutcome, ProviderStdinMode,
 };
 
 pub(super) mod question_ingress;
@@ -48,6 +49,7 @@ pub struct CoshCoreAdapter {
     pub allow_model_call: bool,
     /// Atomically owned active session, workspace, generation, and recovery state.
     pub session: Arc<Mutex<SessionRuntimeState>>,
+    pub(crate) runtime: Arc<PersistentCoshCoreRuntime>,
 }
 
 impl Default for CoshCoreAdapter {
@@ -67,11 +69,22 @@ impl Default for CoshCoreAdapter {
             program,
             allow_model_call: false,
             session: Arc::new(Mutex::new(SessionRuntimeState::default())),
+            runtime: Arc::new(PersistentCoshCoreRuntime::default()),
         }
     }
 }
 
 impl CoshCoreAdapter {
+    /// Creates an adapter for an explicit core executable.
+    pub fn new(program: impl Into<String>, allow_model_call: bool) -> Self {
+        Self {
+            program: program.into(),
+            allow_model_call,
+            session: Arc::new(Mutex::new(SessionRuntimeState::default())),
+            runtime: Arc::new(PersistentCoshCoreRuntime::default()),
+        }
+    }
+
     /// Enables or disables real model process execution.
     pub fn with_model_call(mut self, allow: bool) -> Self {
         self.allow_model_call = allow;
@@ -193,6 +206,26 @@ impl CoshCoreAdapter {
             .management_gate()
     }
 
+    /// Detaches the active and selected provider-session bindings so the next
+    /// Agent request starts a fresh conversation, without deleting or rewriting
+    /// any persisted session.
+    ///
+    /// Serializes with management mutations through the management gate.
+    /// The recovery generation separately prevents a late turn commit from
+    /// re-binding the detached session.
+    pub(super) fn start_fresh_session(&self) -> FreshSessionOutcome {
+        let gate = self.management_gate();
+        let _management = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_session_id = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .start_fresh_session();
+        FreshSessionOutcome::Detached {
+            previous_session_id,
+        }
+    }
+
     /// Returns a consistent snapshot of interactive recovery state.
     pub fn recovery_snapshot(&self) -> SessionRecovery {
         self.session
@@ -312,19 +345,10 @@ impl CoshCoreAdapter {
         }
 
         let resume_attempt = self.begin_resume_attempt(&mut prepared, &session_scope);
-        if mode.uses_control_protocol() {
-            return start_control_protocol_cosh_core_process(
-                request.id,
-                prepared,
-                Arc::clone(&self.session),
-                session_scope,
-                resume_attempt,
-            );
-        }
-
-        start_cancellable_cosh_core_process(
+        self.runtime.start_run(
             request.id,
             prepared,
+            mode,
             Arc::clone(&self.session),
             session_scope,
             resume_attempt,
@@ -413,7 +437,7 @@ fn cosh_core_prompt_from_request(request: &AgentRequest, mode: CoshApprovalMode)
     format!(
         "{}{}",
         request_prompt,
-        provider_prompt_contract_with_evidence_access(mode, "shell", access)
+        provider_prompt_contract_for_request_with_evidence_access(request, mode, "shell", access)
     )
 }
 
@@ -659,14 +683,12 @@ fn try_parse_auth_required_from_line(line: &str, run_id: &str) -> Option<AgentEv
             request_id,
             reason,
             error_message,
-            credentials_unavailable,
             providers,
         } => Some(AgentEvent::AuthRequired {
             run_id: run_id.to_string(),
             request_id,
             reason,
             error_message,
-            credentials_unavailable,
             providers,
         }),
         _ => None,

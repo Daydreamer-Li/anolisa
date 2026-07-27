@@ -170,6 +170,554 @@ fn registry_extensions_list_returns_success() {
 }
 
 #[test]
+fn registry_extensions_report_desired_effective_and_health() {
+    let home = tempfile::tempdir().expect("temp home");
+    let extension = home.path().join(".copilot-shell/extensions/example.ops");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.ops",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"}
+        }"#,
+    )
+    .unwrap();
+
+    let listed =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    let extension = &listed["data"][0];
+    assert_eq!(extension["name"], "example.ops");
+    assert_eq!(extension["desired_state"], "enabled");
+    assert_eq!(extension["effective_state"], "not_loaded");
+    assert_eq!(extension["activation"], "next_session");
+    assert_eq!(extension["health"], "healthy");
+    assert_eq!(extension["schema_version"], "v1");
+
+    let disabled = run_registry_request_with_context(
+        "extensions",
+        "disable",
+        serde_json::json!({"name":"example.ops"}),
+        home.path(),
+        None,
+    );
+    assert_eq!(disabled["success"], true);
+    assert_eq!(disabled["data"]["desired_state"], "disabled");
+    assert_eq!(disabled["data"]["activation"], "next_session");
+
+    let relisted =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert_eq!(relisted["data"][0]["desired_state"], "disabled");
+    assert_eq!(relisted["data"][0]["effective_state"], "not_loaded");
+}
+
+#[test]
+fn registry_enable_rolls_back_when_required_runtime_health_fails() {
+    let home = tempfile::tempdir().expect("temp home");
+    let extension = home
+        .path()
+        .join(".copilot-shell/extensions/example.required");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.required",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "settings":[{
+                "key":"endpoint",
+                "type":"string",
+                "description":"required endpoint",
+                "required":true
+            }]
+        }"#,
+    )
+    .unwrap();
+    let disabled = run_registry_request_with_context(
+        "extensions",
+        "disable",
+        serde_json::json!({"name":"example.required"}),
+        home.path(),
+        None,
+    );
+    assert_eq!(disabled["success"], true, "{disabled}");
+
+    let enabled = run_registry_request_with_context(
+        "extensions",
+        "enable",
+        serde_json::json!({"name":"example.required"}),
+        home.path(),
+        None,
+    );
+
+    assert_eq!(enabled["success"], false, "{enabled}");
+    assert!(enabled["error"]
+        .as_str()
+        .unwrap()
+        .contains("extension_candidate_validation_failed"));
+    let listed =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert_eq!(listed["data"][0]["desired_state"], "disabled");
+}
+
+#[test]
+fn registry_extensions_path_copy_requires_preflight_commit() {
+    let home = tempfile::tempdir().expect("temp home");
+    let source_root = tempfile::tempdir().expect("temp source");
+    std::fs::write(
+        source_root.path().join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.managed",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"}
+        }"#,
+    )
+    .unwrap();
+
+    let preflight = run_registry_request_with_context(
+        "extensions",
+        "install-preflight",
+        serde_json::json!({"source": source_root.path()}),
+        home.path(),
+        None,
+    );
+    assert_eq!(preflight["success"], true, "{preflight}");
+    assert_eq!(preflight["data"]["name"], "example.managed");
+    assert!(!home
+        .path()
+        .join(".copilot-shell/extensions/.managed/example.managed")
+        .exists());
+
+    let committed = run_registry_request_with_context(
+        "extensions",
+        "commit",
+        serde_json::json!({
+            "operation_id": preflight["data"]["operation_id"],
+            "fingerprint": preflight["data"]["capability_fingerprint"],
+        }),
+        home.path(),
+        None,
+    );
+    assert_eq!(committed["success"], true, "{committed}");
+    assert_eq!(committed["data"]["activation"], "next_session");
+
+    let listed =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert_eq!(listed["data"][0]["name"], "example.managed");
+    assert_eq!(listed["data"][0]["source"], "path-copy");
+    assert_eq!(listed["data"][0]["update_status"], "not_updatable");
+
+    let update = run_registry_request_with_context(
+        "extensions",
+        "update-preflight",
+        serde_json::json!({"name": "example.managed"}),
+        home.path(),
+        None,
+    );
+    assert_eq!(update["success"], false, "{update}");
+    assert!(update["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("extension_source_not_updatable:"));
+
+    let update_all = run_registry_request_with_context(
+        "extensions",
+        "update-all-preflight",
+        Value::Null,
+        home.path(),
+        None,
+    );
+    assert_eq!(update_all["success"], true, "{update_all}");
+    assert_eq!(update_all["data"]["status"], "prepared");
+    let batch_id = update_all["data"]["operation_id"].as_str().unwrap();
+    let update_all = run_registry_request_with_context(
+        "extensions",
+        "update-all-commit",
+        serde_json::json!({"operation_id": batch_id}),
+        home.path(),
+        None,
+    );
+    assert_eq!(update_all["success"], true, "{update_all}");
+    assert_eq!(update_all["data"]["status"], "completed");
+    assert_eq!(update_all["data"]["summary"]["skipped"], 1);
+    assert_eq!(update_all["data"]["items"][0]["outcome"], "skipped");
+    let batch_result = run_registry_request_with_context(
+        "extensions",
+        "result",
+        serde_json::json!({"operation_id": batch_id}),
+        home.path(),
+        None,
+    );
+    assert_eq!(batch_result["data"], update_all["data"]);
+
+    let reload =
+        run_registry_request_with_context("extensions", "reload", Value::Null, home.path(), None);
+    assert_eq!(reload["success"], true, "{reload}");
+    assert_eq!(reload["data"]["activation"], "next_session");
+    assert!(reload["data"]["generation"].is_number());
+
+    let removed = run_registry_request_with_context(
+        "extensions",
+        "uninstall",
+        serde_json::json!({"name": "example.managed"}),
+        home.path(),
+        None,
+    );
+    assert_eq!(removed["success"], true, "{removed}");
+    let relisted =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert_eq!(relisted["data"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn registry_commit_rolls_back_when_required_runtime_health_fails() {
+    let home = tempfile::tempdir().expect("temp home");
+    let source_root = tempfile::tempdir().expect("temp source");
+    std::fs::write(
+        source_root.path().join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.unhealthy",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "settings":[{
+                "key":"endpoint",
+                "type":"string",
+                "description":"required endpoint",
+                "required":true
+            }]
+        }"#,
+    )
+    .unwrap();
+    let preflight = run_registry_request_with_context(
+        "extensions",
+        "install-preflight",
+        serde_json::json!({"source": source_root.path()}),
+        home.path(),
+        None,
+    );
+    assert_eq!(preflight["success"], true, "{preflight}");
+
+    let committed = run_registry_request_with_context(
+        "extensions",
+        "commit",
+        serde_json::json!({
+            "operation_id": preflight["data"]["operation_id"],
+            "fingerprint": preflight["data"]["capability_fingerprint"],
+        }),
+        home.path(),
+        None,
+    );
+
+    assert_eq!(committed["success"], false, "{committed}");
+    assert!(committed["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("extension_candidate_validation_failed:"));
+    assert!(!home
+        .path()
+        .join(".copilot-shell/extensions/.managed/example.unhealthy")
+        .exists());
+    let listed =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert!(listed["data"].as_array().unwrap().is_empty(), "{listed}");
+}
+
+#[test]
+fn registry_extensions_new_creates_valid_scaffold_without_installing_it() {
+    let home = tempfile::tempdir().expect("temp home");
+    let project = tempfile::tempdir().expect("temp project");
+    let parent = project.path().join("parent with spaces");
+    std::fs::create_dir(&parent).unwrap();
+    let target = parent.join("sample-extension");
+    let response = run_registry_request_with_context(
+        "extensions",
+        "new",
+        serde_json::json!({"path": target, "template": "mcp"}),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["name"], "sample-extension");
+    assert_eq!(response["data"]["template"], "mcp");
+    assert!(target.join("cosh-extension.json").is_file());
+    assert!(target.join("mcp/README.md").is_file());
+
+    let listed =
+        run_registry_request_with_context("extensions", "list", Value::Null, home.path(), None);
+    assert_eq!(listed["success"], true, "{listed}");
+    assert!(listed["data"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn registry_extensions_git_install_rejects_non_https_source() {
+    let response = run_registry_request(
+        "extensions",
+        "install-preflight",
+        serde_json::json!({
+            "source_kind": "git-https",
+            "source": "ssh://example.com/repository.git"
+        }),
+    );
+    assert_eq!(response["success"], false, "{response}");
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("extension_git_protocol_unsupported:"));
+}
+
+#[test]
+fn registry_extension_settings_parse_persist_and_fallback() {
+    let home = tempfile::tempdir().expect("temp home");
+    let project = tempfile::tempdir().expect("temp project");
+    let extension = home.path().join(".copilot-shell/extensions/example.ops");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.ops",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "settings":[
+                {"key":"region","type":"string","description":"region","default":"default-region"},
+                {"key":"retries","type":"integer","description":"retries"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let set = run_registry_request_with_context(
+        "extensions",
+        "settings-set",
+        serde_json::json!({
+            "name":"example.ops",
+            "key":"region",
+            "value":"cn-hangzhou",
+            "scope":"user"
+        }),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(set["success"], true, "{set}");
+    assert_eq!(set["data"]["setting"]["value"], "cn-hangzhou");
+    assert_eq!(set["data"]["activation"], "pending_safe_reload");
+    assert!(set["data"]["candidate_generation"].is_number());
+
+    let get = run_registry_request_with_context(
+        "extensions",
+        "settings-get",
+        serde_json::json!({"name":"example.ops","key":"region"}),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(get["success"], true, "{get}");
+    assert_eq!(get["data"]["scope"], "user");
+    assert_eq!(get["data"]["value"], "cn-hangzhou");
+
+    let invalid = run_registry_request_with_context(
+        "extensions",
+        "settings-set",
+        serde_json::json!({
+            "name":"example.ops",
+            "key":"retries",
+            "value":"many",
+            "scope":"user"
+        }),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(invalid["success"], false, "{invalid}");
+    assert!(invalid["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("extension_setting_type_invalid:"));
+
+    let unset = run_registry_request_with_context(
+        "extensions",
+        "settings-unset",
+        serde_json::json!({"name":"example.ops","key":"region","scope":"user"}),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(unset["success"], true, "{unset}");
+    assert_eq!(unset["data"]["setting"]["value"], "default-region");
+    assert_eq!(unset["data"]["setting"]["scope"], Value::Null);
+}
+
+#[test]
+fn registry_required_setting_unset_rolls_back_unhealthy_candidate() {
+    let home = tempfile::tempdir().expect("temp home");
+    let project = tempfile::tempdir().expect("temp project");
+    let extension = home
+        .path()
+        .join(".copilot-shell/extensions/example.required");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.required",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "settings":[{
+                "key":"endpoint",
+                "type":"string",
+                "description":"required endpoint",
+                "required":true
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let set = run_registry_request_with_context(
+        "extensions",
+        "settings-set",
+        serde_json::json!({
+            "name":"example.required",
+            "key":"endpoint",
+            "value":"https://service.example",
+            "scope":"user"
+        }),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(set["success"], true, "{set}");
+
+    let unset = run_registry_request_with_context(
+        "extensions",
+        "settings-unset",
+        serde_json::json!({
+            "name":"example.required",
+            "key":"endpoint",
+            "scope":"user"
+        }),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(unset["success"], false, "{unset}");
+    assert!(unset["error"]
+        .as_str()
+        .unwrap()
+        .contains("extension_candidate_validation_failed"));
+
+    let get = run_registry_request_with_context(
+        "extensions",
+        "settings-get",
+        serde_json::json!({"name":"example.required","key":"endpoint"}),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(get["success"], true, "{get}");
+    assert_eq!(get["data"]["value"], "https://service.example");
+}
+
+#[test]
+fn registry_workspace_settings_require_existing_project_trust() {
+    let home = tempfile::tempdir().expect("temp home");
+    let project = tempfile::tempdir().expect("temp project");
+    let extension = home.path().join(".copilot-shell/extensions/example.ops");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.ops",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "settings":[{"key":"region","type":"string","description":"region"}]
+        }"#,
+    )
+    .unwrap();
+    let params = serde_json::json!({
+        "name":"example.ops",
+        "key":"region",
+        "value":"workspace-region",
+        "scope":"workspace"
+    });
+    let denied = run_registry_request_with_context(
+        "extensions",
+        "settings-set",
+        params.clone(),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(denied["success"], false, "{denied}");
+    assert!(denied["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("extension_workspace_untrusted:"));
+
+    let trust_store = home
+        .path()
+        .join(".copilot-shell/cosh/trusted-project-hooks");
+    std::fs::create_dir_all(trust_store.parent().unwrap()).unwrap();
+    std::fs::write(
+        trust_store,
+        format!("{}\n", project.path().canonicalize().unwrap().display()),
+    )
+    .unwrap();
+    let allowed = run_registry_request_with_context(
+        "extensions",
+        "settings-set",
+        params,
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(allowed["success"], true, "{allowed}");
+    assert_eq!(allowed["data"]["setting"]["scope"], "workspace");
+    assert!(project
+        .path()
+        .join(".copilot-shell/extension-settings.json")
+        .is_file());
+}
+
+#[test]
+fn registry_extension_info_reports_declared_agents_as_non_executable() {
+    let home = tempfile::tempdir().expect("temp home");
+    let project = tempfile::tempdir().expect("temp project");
+    let extension = home.path().join(".copilot-shell/extensions/example.ops");
+    std::fs::create_dir_all(extension.join("agents")).unwrap();
+    std::fs::write(
+        extension.join("agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Review incidents\ntools:\n  - read_file\n---\n\nReview safely.",
+    )
+    .unwrap();
+    std::fs::write(
+        extension.join("cosh-extension.json"),
+        r#"{
+            "schemaVersion":1,
+            "name":"example.ops",
+            "version":"1.0.0",
+            "compatibility":{"cosh":">=0.12.0"},
+            "agents":["agents"]
+        }"#,
+    )
+    .unwrap();
+    let response = run_registry_request_with_context(
+        "extensions",
+        "info",
+        serde_json::json!({"name":"example.ops"}),
+        home.path(),
+        Some(project.path()),
+    );
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(
+        response["data"]["agents"][0]["id"],
+        "example.ops/agent/reviewer"
+    );
+    assert_eq!(response["data"]["agents"][0]["executable"], false);
+    assert_eq!(
+        response["data"]["agents"][0]["effective_tools"][0],
+        "read_file"
+    );
+    assert!(response["data"]["agents"][0].get("prompt").is_none());
+}
+
+#[test]
 fn registry_skills_list_returns_success() {
     let resp = run_registry_request("skills", "list", Value::Null);
     assert_eq!(resp["type"], "registry_response");
@@ -282,634 +830,85 @@ api_key = "sk-project"
     let project_config = std::fs::read_to_string(project_config_path).unwrap();
 
     assert!(home_config.contains("[ai.providers.home-provider]"));
-    assert!(home_config.contains("api_key = \"enc:"));
-    assert!(!home_config.contains("sk-home"));
+    assert!(home_config.contains("api_key = \"sk-home\""));
     assert!(!home_config.contains("project-model"));
     assert!(!home_config.contains("project-provider"));
     assert!(project_config.contains("project-model"));
     assert!(project_config.contains("sk-project"));
-
-    let state = run_registry_request_with_context(
-        "auth",
-        "state",
-        Value::Null,
-        home.path(),
-        Some(project.path()),
-    );
-    let saved = state["data"]["saved_providers"].as_array().unwrap();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(saved[0]["provider_id"], "home-provider");
-    assert_eq!(saved[0]["api_key_len"], 7);
 }
 
 #[test]
-fn registry_auth_configure_encrypts_credentials_starting_with_enc_prefix() {
+fn registry_auth_configure_rejects_invalid_base_url_without_writing_config() {
     let home = tempfile::tempdir().expect("temp home");
-    let plaintext = "enc:plaintext-secret";
+    let config_path = home.path().join(".copilot-shell/config.toml");
+
     let response = run_registry_request_with_context(
         "auth",
         "configure",
         serde_json::json!({
-            "provider_id": "prefix-provider",
-            "provider_type": "dashscope",
+            "provider_id": "bad-url",
+            "provider_type": "openai_compat",
             "values": {
-                "api_key": plaintext
+                "base_url": "error-testhttps://api.example.com/v1",
+                "api_key": "sk-test",
+                "model": "qwen-test"
             }
         }),
         home.path(),
         None,
     );
-    assert_eq!(response["success"], true);
 
-    let config_dir = home.path().join(".copilot-shell");
-    let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(config.contains("api_key = \"enc:"));
-    assert!(!config.contains(plaintext));
-    assert!(config_dir.join(".encryption-salt").exists());
-
-    let state = run_registry_request_with_context("auth", "state", Value::Null, home.path(), None);
-    let saved = state["data"]["saved_providers"].as_array().unwrap();
-    assert_eq!(saved[0]["api_key_len"], plaintext.chars().count());
+    assert_eq!(response["success"], false);
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("invalid base_url")),
+        "{response}"
+    );
+    assert!(!config_path.exists());
 }
 
 #[test]
-fn registry_auth_reconfiguration_clears_opaque_aliyun_credentials() {
+fn registry_auth_delete_removes_user_provider_and_credentials() {
     let home = tempfile::tempdir().expect("temp home");
-    let configure_static = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "aliyun",
-            "provider_type": "aliyun",
-            "values": {
-                "access_key_id": "test-access-key-id",
-                "access_key_secret": "test-access-key-secret",
-                "security_token": "test-security-token"
-            }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(configure_static["success"], true);
+    let home_config_dir = home.path().join(".copilot-shell");
+    std::fs::create_dir_all(&home_config_dir).unwrap();
+    let config_path = home_config_dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+active_provider = "remove-me"
 
-    let config_dir = home.path().join(".copilot-shell");
-    std::fs::write(config_dir.join(".encryption-salt"), [0x33_u8; 32]).unwrap();
-    let configure_ecs = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "aliyun",
-            "provider_type": "aliyun",
-            "values": {
-                "auth_source": "ecs_ram_role"
-            }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(configure_ecs["success"], true);
+[ai.providers.keep-me]
+type = "dashscope"
+api_key = "sk-keep"
 
-    let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(config.contains("auth_source = \"ecs_ram_role\""));
-    assert!(!config.contains("access_key_id"));
-    assert!(!config.contains("access_key_secret"));
-    assert!(!config.contains("security_token"));
-}
+[ai.providers.remove-me]
+type = "openai"
+api_key = "sk-remove"
+model = "remove-model"
+"#,
+    )
+    .unwrap();
 
-#[test]
-fn registry_auth_configure_rejects_new_credentials_with_opaque_credentials() {
-    let home = tempfile::tempdir().expect("temp home");
-    let configure_first = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "first",
-            "provider_type": "dashscope",
-            "values": {
-                "api_key": "first-secret"
-            }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(configure_first["success"], true);
-
-    let config_dir = home.path().join(".copilot-shell");
-    let config_path = config_dir.join("config.toml");
-    let original = std::fs::read_to_string(&config_path).unwrap();
-    std::fs::write(config_dir.join(".encryption-salt"), [0x44_u8; 32]).unwrap();
-
-    let configure_second = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "second",
-            "provider_type": "dashscope",
-            "values": {
-                "api_key": "second-secret"
-            }
-        }),
-        home.path(),
-        None,
-    );
-
-    assert_eq!(configure_second["success"], false);
-    assert_eq!(configure_second["error"], "credential_reset_required");
-    assert_eq!(std::fs::read_to_string(config_path).unwrap(), original);
-}
-
-#[test]
-fn registry_auth_reset_recovers_when_multiple_providers_are_opaque() {
-    let home = tempfile::tempdir().expect("temp home");
-    for (provider_id, api_key) in [("first", "first-secret"), ("second", "second-secret")] {
-        let response = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": provider_id,
-                "provider_type": "dashscope",
-                "values": { "api_key": api_key }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(response["success"], true);
-    }
-
-    let config_dir = home.path().join(".copilot-shell");
-    std::fs::write(config_dir.join(".encryption-salt"), [0x55_u8; 32]).unwrap();
-    let blocked = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "first",
-            "provider_type": "dashscope",
-            "values": { "api_key": "replacement-secret" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(blocked["success"], false);
-
-    let reset = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "first",
-            "provider_type": "dashscope",
-            "reset_unavailable_credentials": true,
-            "values": { "api_key": "replacement-secret" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(reset["success"], true);
-
-    let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(!config.contains("first-secret"));
-    assert!(!config.contains("second-secret"));
-    assert!(!config.contains("replacement-secret"));
-    assert_eq!(config.matches("api_key =").count(), 1);
-}
-
-#[test]
-fn registry_auth_reset_rotates_invalid_salt() {
-    for invalid_salt in [vec![0x11_u8], Vec::new()] {
-        let home = tempfile::tempdir().expect("temp home");
-        let initial = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": "first",
-                "provider_type": "dashscope",
-                "values": { "api_key": "first-secret" }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(initial["success"], true);
-
-        let config_dir = home.path().join(".copilot-shell");
-        std::fs::write(config_dir.join(".encryption-salt"), &invalid_salt).unwrap();
-        let reset = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": "replacement",
-                "provider_type": "dashscope",
-                "reset_unavailable_credentials": true,
-                "values": { "api_key": "replacement-secret" }
-            }),
-            home.path(),
-            None,
-        );
-
-        assert_eq!(reset["success"], true);
-        assert_eq!(
-            std::fs::read(config_dir.join(".encryption-salt"))
-                .unwrap()
-                .len(),
-            32
-        );
-        let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-        assert_eq!(config.matches("api_key =").count(), 1);
-        assert!(!config.contains("replacement-secret"));
-    }
-}
-
-#[test]
-fn registry_auth_reset_repairs_malformed_salt_without_opaque_credentials() {
-    for invalid_salt in [Vec::new(), vec![0x11_u8; 8]] {
-        let home = tempfile::tempdir().expect("temp home");
-        let config_dir = home.path().join(".copilot-shell");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join(".encryption-salt"), &invalid_salt).unwrap();
-
-        // No encrypted credentials exist yet, so nothing is opaque; the
-        // malformed salt still blocks encryption without an explicit reset.
-        let blocked = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": "fresh",
-                "provider_type": "dashscope",
-                "values": { "api_key": "fresh-secret" }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(blocked["success"], false);
-        // The shell only shows its reset confirmation for this exact signal, so
-        // a malformed salt must surface as credential_reset_required rather than
-        // a generic persistence error the shell cannot act on.
-        assert_eq!(blocked["error"], "credential_reset_required");
-        assert_eq!(
-            std::fs::read(config_dir.join(".encryption-salt")).unwrap(),
-            invalid_salt
-        );
-        assert!(!config_dir.join("config.toml").exists());
-
-        let reset = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": "fresh",
-                "provider_type": "dashscope",
-                "reset_unavailable_credentials": true,
-                "values": { "api_key": "fresh-secret" }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(reset["success"], true);
-        assert_eq!(
-            std::fs::read(config_dir.join(".encryption-salt"))
-                .unwrap()
-                .len(),
-            32
-        );
-        let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-        assert!(config.contains("api_key = \"enc:"));
-        assert!(!config.contains("fresh-secret"));
-    }
-}
-
-#[test]
-fn registry_auth_configure_ecs_ram_role_writes_no_salt_or_api_key() {
-    let home = tempfile::tempdir().expect("temp home");
     let response = run_registry_request_with_context(
         "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "aliyun",
-            "provider_type": "aliyun",
-            "values": { "auth_source": "ecs_ram_role" }
-        }),
+        "delete",
+        serde_json::json!({ "provider_id": "remove-me" }),
         home.path(),
         None,
     );
+
     assert_eq!(response["success"], true);
-
-    let config_dir = home.path().join(".copilot-shell");
-    // ECS RAM role has no static credential to encrypt, so no salt is created.
-    assert!(!config_dir.join(".encryption-salt").exists());
-    let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    assert!(config.contains("auth_source = \"ecs_ram_role\""));
-    // A credential-less provider must not persist an (encrypted) empty api_key.
-    assert!(!config.contains("api_key"));
-}
-
-#[test]
-fn registry_auth_configure_ecs_ram_role_preserves_opaque_peer_without_reset() {
-    let home = tempfile::tempdir().expect("temp home");
-    let seed = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "peer",
-            "provider_type": "dashscope",
-            "values": { "api_key": "peer-secret" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(seed["success"], true);
-
-    let config_dir = home.path().join(".copilot-shell");
-    let config_path = config_dir.join("config.toml");
-    let seeded = std::fs::read_to_string(&config_path).unwrap();
-    let enc_start = seeded
-        .find("api_key = \"")
-        .map(|o| o + "api_key = \"".len())
-        .unwrap();
-    let enc_end = seeded[enc_start..]
-        .find('"')
-        .map(|o| enc_start + o)
-        .unwrap();
-    let peer_ciphertext = seeded[enc_start..enc_end].to_string();
-    assert!(peer_ciphertext.starts_with("enc:"));
-
-    // Corrupt the salt so the peer's ciphertext can no longer be decrypted.
-    std::fs::write(config_dir.join(".encryption-salt"), [0x77_u8; 32]).unwrap();
-
-    // Configuring an ECS RAM role writes no static credential, so it must not
-    // require a reset of the unrelated (now opaque) peer credential.
-    let ecs = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "aliyun",
-            "provider_type": "aliyun",
-            "values": { "auth_source": "ecs_ram_role" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(
-        ecs["success"], true,
-        "ECS config must not need a reset: {ecs:?}"
-    );
-
-    // The opaque peer ciphertext must survive untouched.
-    let after = std::fs::read_to_string(&config_path).unwrap();
-    assert!(after.contains(&peer_ciphertext));
-    assert!(after.contains("auth_source = \"ecs_ram_role\""));
-}
-
-#[test]
-fn registry_auth_configure_rejects_empty_credentials_without_touching_state() {
-    let home = tempfile::tempdir().expect("temp home");
-    let seed = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "seed",
-            "provider_type": "dashscope",
-            "values": { "api_key": "seed-secret" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(seed["success"], true);
-
-    let config_dir = home.path().join(".copilot-shell");
-    let config_before = std::fs::read(config_dir.join("config.toml")).unwrap();
-    let salt_before = std::fs::read(config_dir.join(".encryption-salt")).unwrap();
-
-    // A blank API key is rejected before any salt rotation or persistence.
-    let empty_api_key = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "empty-key",
-            "provider_type": "dashscope",
-            "values": { "api_key": "   " }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(empty_api_key["success"], false);
-
-    // Aliyun requires both access key fields when not using an ECS RAM role.
-    let empty_aliyun = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "empty-aliyun",
-            "provider_type": "aliyun",
-            "values": { "access_key_id": "", "access_key_secret": "" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(empty_aliyun["success"], false);
-
-    assert_eq!(
-        std::fs::read(config_dir.join("config.toml")).unwrap(),
-        config_before
-    );
-    assert_eq!(
-        std::fs::read(config_dir.join(".encryption-salt")).unwrap(),
-        salt_before
-    );
-}
-
-#[test]
-fn registry_auth_configure_rejects_unresolvable_masked_secret() {
-    let mask = "••••••••";
-
-    // A dashscope api_key whose ciphertext became opaque cannot be re-masked.
-    let home = tempfile::tempdir().expect("temp home");
-    let config_dir = home.path().join(".copilot-shell");
-    let seed = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "dash",
-            "provider_type": "dashscope",
-            "values": { "api_key": "real-secret" }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(seed["success"], true);
-    std::fs::write(config_dir.join(".encryption-salt"), [0x66_u8; 32]).unwrap();
-    let before = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    let rejected = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "dash",
-            "provider_type": "dashscope",
-            "values": { "api_key": mask }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(rejected["success"], false);
-    // The opaque ciphertext must survive the rejected mask untouched.
-    assert_eq!(
-        std::fs::read_to_string(config_dir.join("config.toml")).unwrap(),
-        before
-    );
-    assert!(before.contains("api_key = \"enc:"));
-
-    // Each Aliyun secret field fails closed once its ciphertext is unreadable.
-    let home = tempfile::tempdir().expect("temp home");
-    let config_dir = home.path().join(".copilot-shell");
-    let seed = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "aliyun",
-            "provider_type": "aliyun",
-            "values": {
-                "access_key_id": "real-ak",
-                "access_key_secret": "real-sk",
-                "security_token": "real-token"
-            }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(seed["success"], true);
-    std::fs::write(config_dir.join(".encryption-salt"), [0x66_u8; 32]).unwrap();
-    let before = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
-    for field in ["access_key_id", "access_key_secret", "security_token"] {
-        let rejected = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": "aliyun",
-                "provider_type": "aliyun",
-                "values": { field: mask }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(rejected["success"], false, "field {field} must fail closed");
-        assert_eq!(
-            std::fs::read_to_string(config_dir.join("config.toml")).unwrap(),
-            before
-        );
-    }
-}
-
-#[test]
-fn registry_auth_activate_preserves_healthy_credentials_with_tampered_peer() {
-    let home = tempfile::tempdir().expect("temp home");
-    for (provider_id, api_key) in [("first", "first-secret"), ("second", "second-secret")] {
-        let response = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": provider_id,
-                "provider_type": "dashscope",
-                "values": { "api_key": api_key }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(response["success"], true);
-    }
-
-    let config_path = home.path().join(".copilot-shell/config.toml");
-    let config = std::fs::read_to_string(&config_path).unwrap();
-    let section_start = config.find("[ai.providers.second]").unwrap();
-    let section_end = config[section_start + 1..]
-        .find("\n[")
-        .map(|offset| section_start + 1 + offset)
-        .unwrap_or(config.len());
-    let api_start = config[section_start..section_end]
-        .find("api_key = \"")
-        .map(|offset| section_start + offset + "api_key = \"".len())
-        .unwrap();
-    let api_end = config[api_start..]
-        .find('"')
-        .map(|offset| api_start + offset)
-        .unwrap();
-    let replacement = if config.as_bytes()[api_end - 1] == b'0' {
-        '1'
-    } else {
-        '0'
-    };
-    let tampered = format!(
-        "{}{replacement}{}",
-        &config[..api_end - 1],
-        &config[api_end..]
-    );
-    std::fs::write(&config_path, tampered).unwrap();
-
-    let activated = run_registry_request_with_context(
-        "auth",
-        "activate",
-        serde_json::json!({ "provider_id": "first" }),
-        home.path(),
-        None,
-    );
-    assert_eq!(activated["success"], true);
-}
-
-#[test]
-fn registry_auth_metadata_edit_preserves_tampered_peer_without_reset() {
-    let home = tempfile::tempdir().expect("temp home");
-    for (provider_id, api_key) in [("first", "first-secret"), ("second", "second-secret")] {
-        let response = run_registry_request_with_context(
-            "auth",
-            "configure",
-            serde_json::json!({
-                "provider_id": provider_id,
-                "provider_type": "dashscope",
-                "values": { "api_key": api_key }
-            }),
-            home.path(),
-            None,
-        );
-        assert_eq!(response["success"], true);
-    }
-
-    let config_path = home.path().join(".copilot-shell/config.toml");
-    let config = std::fs::read_to_string(&config_path).unwrap();
-    let section_start = config.find("[ai.providers.second]").unwrap();
-    let api_start = config[section_start..]
-        .find("api_key = \"")
-        .map(|offset| section_start + offset + "api_key = \"".len())
-        .unwrap();
-    let api_end = config[api_start..]
-        .find('"')
-        .map(|offset| api_start + offset)
-        .unwrap();
-    let replacement = if config.as_bytes()[api_end - 1] == b'0' {
-        '1'
-    } else {
-        '0'
-    };
-    let tampered = format!(
-        "{}{replacement}{}",
-        &config[..api_end - 1],
-        &config[api_end..]
-    );
-    std::fs::write(&config_path, tampered).unwrap();
-
-    let edited = run_registry_request_with_context(
-        "auth",
-        "configure",
-        serde_json::json!({
-            "provider_id": "first",
-            "provider_type": "dashscope",
-            "values": {
-                "api_key": "••••••••••••",
-                "model": "qwen3.7-max"
-            }
-        }),
-        home.path(),
-        None,
-    );
-    assert_eq!(edited["success"], true);
+    assert_eq!(response["data"]["deleted_provider"], "remove-me");
+    assert!(response["data"]["active_provider"].is_null());
 
     let persisted = std::fs::read_to_string(&config_path).unwrap();
-    assert_eq!(persisted.matches("api_key =").count(), 2);
-    assert!(persisted.contains("model = \"qwen3.7-max\""));
+    assert!(!persisted.contains("[ai.providers.remove-me]"));
+    assert!(!persisted.contains("sk-remove"));
+    assert!(persisted.contains("[ai.providers.keep-me]"));
+    assert!(persisted.contains("sk-keep"));
 }
 
 #[test]

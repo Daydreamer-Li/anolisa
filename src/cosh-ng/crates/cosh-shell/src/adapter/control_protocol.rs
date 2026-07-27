@@ -32,6 +32,7 @@ pub enum ControlRequest {
         tool_input: Value,
         tool_use_id: String,
         hook_requires_approval: bool,
+        audit_ref: Option<String>,
     },
     AskUser {
         request_id: String,
@@ -44,7 +45,6 @@ pub enum ControlRequest {
         request_id: String,
         reason: String,
         error_message: Option<String>,
-        credentials_unavailable: bool,
         providers: Vec<AuthProviderInfo>,
     },
     ShellEvidence {
@@ -116,7 +116,6 @@ pub struct AuthResponse {
     pub provider_type: Option<String>,
     pub values: HashMap<String, String>,
     pub persist: bool,
-    pub reset_unavailable_credentials: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -369,12 +368,17 @@ pub fn parse_control_request(line: &str) -> Option<ControlRequest> {
                 .get("hook_requires_approval")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let audit_ref = request
+                .get("audit_ref")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
             Some(ControlRequest::CanUseTool {
                 request_id,
                 tool_name,
                 tool_input,
                 tool_use_id,
                 hook_requires_approval,
+                audit_ref,
             })
         }
         "ask_user" => {
@@ -425,10 +429,6 @@ pub fn parse_control_request(line: &str) -> Option<ControlRequest> {
                 .get("error_message")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let credentials_unavailable = request
-                .get("credentials_unavailable")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
             let providers = request
                 .get("providers")
                 .and_then(|v| v.as_array())
@@ -482,7 +482,6 @@ pub fn parse_control_request(line: &str) -> Option<ControlRequest> {
                 request_id,
                 reason,
                 error_message,
-                credentials_unavailable,
                 providers,
             })
         }

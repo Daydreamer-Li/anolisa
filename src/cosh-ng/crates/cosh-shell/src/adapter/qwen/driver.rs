@@ -326,6 +326,7 @@ pub(super) fn start_control_protocol_qwen_process(
                             tool_input,
                             tool_use_id,
                             hook_requires_approval,
+                            audit_ref,
                         } => {
                             let _ = pending_control_tool_call
                                 .borrow_mut()
@@ -351,6 +352,7 @@ pub(super) fn start_control_protocol_qwen_process(
                                     tool_input,
                                     tool_use_id,
                                     hook_requires_approval,
+                                    audit_ref,
                                 },
                             );
                             return Ok(ProviderLineProgress::AwaitingApproval);
@@ -382,7 +384,6 @@ pub(super) fn start_control_protocol_qwen_process(
                             request_id,
                             reason,
                             error_message,
-                            credentials_unavailable,
                             providers,
                         } => {
                             send_agent_event(
@@ -392,7 +393,6 @@ pub(super) fn start_control_protocol_qwen_process(
                                     request_id,
                                     reason,
                                     error_message,
-                                    credentials_unavailable,
                                     providers,
                                 },
                             );

@@ -145,8 +145,6 @@ pub struct ControlResponseBody {
     #[serde(default)]
     pub values: Option<HashMap<String, String>>,
     pub persist: Option<bool>,
-    #[serde(default)]
-    pub reset_unavailable_credentials: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -266,8 +264,6 @@ pub struct SystemPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_use_id: Option<String>,
@@ -321,6 +317,8 @@ pub enum CoreControlRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         tool_use_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        audit_ref: Option<String>,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         hook_requires_approval: bool,
     },
@@ -338,8 +336,6 @@ pub enum CoreControlRequest {
         reason: AuthReason,
         #[serde(skip_serializing_if = "Option::is_none")]
         error_message: Option<String>,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
-        credentials_unavailable: bool,
         providers: Vec<AuthProvider>,
     },
 
@@ -467,38 +463,6 @@ impl OutputMessage {
             subtype: "status".to_string(),
             payload: SystemPayload {
                 status: Some(status.to_string()),
-                ..Default::default()
-            },
-        }
-    }
-
-    pub fn auth_result(request_id: &str, persisted: bool) -> Self {
-        Self::System {
-            subtype: "status".to_string(),
-            payload: SystemPayload {
-                status: Some(
-                    if persisted {
-                        "auth_ok"
-                    } else {
-                        "auth_persist_failed"
-                    }
-                    .to_string(),
-                ),
-                request_id: Some(request_id.to_string()),
-                ..Default::default()
-            },
-        }
-    }
-
-    /// Credentials were applied to the current run but intentionally not
-    /// persisted (`persist=false`). Distinct from `auth_ok` so the shell does
-    /// not report the config as saved when nothing was written to disk.
-    pub fn auth_applied(request_id: &str) -> Self {
-        Self::System {
-            subtype: "status".to_string(),
-            payload: SystemPayload {
-                status: Some("auth_applied".to_string()),
-                request_id: Some(request_id.to_string()),
                 ..Default::default()
             },
         }
@@ -690,6 +654,25 @@ impl OutputMessage {
         tool_use_id: &str,
         hook_requires_approval: bool,
     ) -> Self {
+        Self::can_use_tool_with_audit_ref(
+            request_id,
+            tool_name,
+            input,
+            tool_use_id,
+            hook_requires_approval,
+            None,
+        )
+    }
+
+    /// Builds a Tool approval request linked to a persisted audit event.
+    pub fn can_use_tool_with_audit_ref(
+        request_id: &str,
+        tool_name: &str,
+        input: Value,
+        tool_use_id: &str,
+        hook_requires_approval: bool,
+        audit_ref: Option<String>,
+    ) -> Self {
         Self::ControlRequest {
             request_id: request_id.to_string(),
             request: CoreControlRequest::CanUseTool {
@@ -698,6 +681,7 @@ impl OutputMessage {
                 description: None,
                 tool_use_id: tool_use_id.to_string(),
                 hook_requires_approval,
+                audit_ref,
             },
         }
     }
@@ -706,7 +690,6 @@ impl OutputMessage {
         request_id: &str,
         reason: AuthReason,
         error_message: Option<String>,
-        credentials_unavailable: bool,
         providers: Vec<AuthProvider>,
     ) -> Self {
         Self::ControlRequest {
@@ -714,7 +697,6 @@ impl OutputMessage {
             request: CoreControlRequest::AuthRequired {
                 reason,
                 error_message,
-                credentials_unavailable,
                 providers,
             },
         }
@@ -1044,6 +1026,20 @@ mod tests {
     }
 
     #[test]
+    fn can_use_tool_carries_real_optional_audit_reference() {
+        let msg = OutputMessage::can_use_tool_with_audit_ref(
+            "req-1",
+            "Bash",
+            serde_json::json!({"command": "echo ok"}),
+            "toolu-1",
+            false,
+            Some("audit-event-1".to_string()),
+        );
+        let value = serde_json::to_value(msg).unwrap();
+        assert_eq!(value["request"]["audit_ref"], "audit-event-1");
+    }
+
+    #[test]
     fn serialize_result_success() {
         let msg = OutputMessage::result_success("sess-1", "Done");
         let json = serde_json::to_string(&msg).unwrap();
@@ -1180,20 +1176,5 @@ mod tests {
         let v: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["event"]["type"], "content_block_start");
         assert_eq!(v["event"]["content_block"]["type"], "thinking");
-    }
-
-    #[test]
-    fn auth_status_messages_are_distinct() {
-        let saved = serde_json::to_value(OutputMessage::auth_result("auth-1", true)).unwrap();
-        assert_eq!(saved["status"], "auth_ok");
-        assert_eq!(saved["request_id"], "auth-1");
-
-        let failed = serde_json::to_value(OutputMessage::auth_result("auth-1", false)).unwrap();
-        assert_eq!(failed["status"], "auth_persist_failed");
-
-        // Applied-but-not-persisted must be distinct from both saved and failed.
-        let applied = serde_json::to_value(OutputMessage::auth_applied("auth-1")).unwrap();
-        assert_eq!(applied["status"], "auth_applied");
-        assert_eq!(applied["request_id"], "auth-1");
     }
 }

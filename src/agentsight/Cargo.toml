@@ -3,8 +3,10 @@ resolver = "2"
 members = [
     ".",
     "crates/agentsight-local",
+    "crates/agentsight-atif",
     "crates/agentsight-opt",
     "crates/agentsight-opt-store",
+    "crates/agentsight-trajectory-collector",
 ]
 
 [workspace.package]
@@ -50,8 +52,10 @@ crate-type = ["cdylib", "rlib"]
 # Cross-platform dependencies (compile on all OSes)
 [dependencies]
 agentsight-local = { workspace = true }
+agentsight-atif = { path = "crates/agentsight-atif" }
 agentsight-opt = { path = "crates/agentsight-opt", optional = true }
 agentsight-opt-store = { path = "crates/agentsight-opt-store", optional = true }
+agentsight-trajectory-collector = { path = "crates/agentsight-trajectory-collector" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 env_filter = "1.0"
