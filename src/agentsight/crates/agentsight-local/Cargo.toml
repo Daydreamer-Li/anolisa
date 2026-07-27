@@ -5,6 +5,8 @@ edition.workspace = true
 description = "Cross-platform local AI agent trajectory viewer — discover JSONL session files and display as ATIF trajectories. No eBPF, no SQLite."
 
 [dependencies]
+agentsight-atif = { path = "../agentsight-atif" }
+agentsight-trajectory-collector = { path = "../agentsight-trajectory-collector" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

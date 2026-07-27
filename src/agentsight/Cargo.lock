@@ -293,6 +293,8 @@ version = "0.1.0"
 dependencies = [
  "actix-cors",
  "actix-web",
+ "agentsight-atif",
+ "agentsight-trajectory-collector",
  "anyhow",
  "dirs",
  "include_dir",
@@ -333,7 +335,7 @@ version = "0.1.0"
 dependencies = [
  "agentsight-atif",
  "anyhow",
- "log 0.4.29",
+ "log 0.4.33",
  "rusqlite",
  "serde",
  "serde_json",

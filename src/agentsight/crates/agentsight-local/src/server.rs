@@ -5,10 +5,14 @@
 
 mod agents;
 mod local_sessions;
+mod trajectories;
 
 use actix_cors::Cors;
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, web};
+use agentsight_trajectory_collector::{CollectorConfig, TrajectoryStore, run_collector_loop};
 use include_dir::{Dir, include_dir};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 /// Embedded frontend static files (built from dashboard/ via `npm run build:embed`)
 /// The directory `frontend-dist/` must exist at compile time; if it is absent
@@ -100,6 +104,32 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         );
     }
 
+    // Initialize trajectory store and run a collection scan
+    let db_path = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("agentsight")
+        .join("trajectories.db");
+    let store = TrajectoryStore::new_with_path(&db_path).ok();
+
+    if let Some(ref s) = store {
+        let config = CollectorConfig {
+            scan_interval_secs: 300,
+            scan_dirs: None,
+            db_path: db_path.clone(),
+        };
+        agentsight_trajectory_collector::scan_once(s, &config);
+        eprintln!("Trajectory scan complete. DB: {}", db_path.display());
+
+        // Background periodic scan
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        std::thread::spawn(move || {
+            run_collector_loop(&config, &stop_clone);
+        });
+    }
+
+    let store_data = web::Data::new(store);
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -109,6 +139,11 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
+            .app_data(store_data.clone())
+            // Trajectory collection API
+            .service(trajectories::list_trajectories)
+            .service(trajectories::trajectory_filters)
+            .service(trajectories::get_trajectory_detail)
             // Local session discovery + ATIF conversion API
             .service(local_sessions::list_local_sessions)
             .service(local_sessions::convert_local_to_atif)

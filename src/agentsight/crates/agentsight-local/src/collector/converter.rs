@@ -1,41 +1,34 @@
 //! JSONL → ATIF converter
 //!
 //! Parses QoderWork/Qoder/Claude Code JSONL session files and converts them
-//! to ATIF v1.6 documents for trajectory display. These agents share a common
+//! to ATIF v1.7 documents for trajectory display. These agents share a common
 //! JSONL format with event types: `runtime-config`, `user`, `assistant`.
 //!
 //! Content blocks within messages:
 //! - `assistant` content: `thinking`, `text`, `tool_use`
 //! - `user` content: `text` (human input), `tool_result` (tool output)
 
+use agentsight_atif::{
+    Agent, AtifTrajectory, ATIF_SCHEMA_VERSION, FinalMetrics, Observation, ObservationResult, Step,
+    StepSource, ToolCall,
+};
 use serde_json::Value;
 use std::path::Path;
 
-use crate::atif::{
-    AtifAgent, AtifDocument, AtifFinalMetrics, AtifObservation, AtifObservationResult, AtifStep,
-    AtifToolCall, SCHEMA_VERSION,
-};
-
-/// Convert a JSONL session file to an ATIF document.
-///
-/// The file must contain JSONL lines with `type` field: `runtime-config`,
-/// `user`, or `assistant`. Other types (`session_meta`, `progress`, etc.)
-/// are silently skipped.
-pub fn convert_jsonl_to_atif(path: &Path) -> anyhow::Result<AtifDocument> {
+pub fn convert_jsonl_to_atif(path: &Path) -> anyhow::Result<AtifTrajectory> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
 
     convert_jsonl_content_to_atif(&content)
 }
 
-/// Convert raw JSONL content to an ATIF document.
-pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocument> {
+pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifTrajectory> {
     let mut session_id = String::new();
     let mut model_name: Option<String> = None;
     let mut agent_version = String::new();
     let mut agent_name = String::new();
-    let mut steps: Vec<AtifStep> = Vec::new();
-    let mut step_id: u32 = 0;
+    let mut steps: Vec<Step> = Vec::new();
+    let mut step_id: usize = 0;
 
     for line in content.lines() {
         let line = line.trim();
@@ -62,7 +55,7 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                     model_name = event
                         .get("model")
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                        .map(String::from);
                 }
                 if agent_version.is_empty() {
                     agent_version = event
@@ -84,20 +77,17 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                 let timestamp = event
                     .get("timestamp")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                    .map(String::from);
                 let content_arr = event.pointer("/message/content").and_then(|c| c.as_array());
 
                 if let Some(blocks) = content_arr {
-                    // Check if this is a tool_result message
                     let is_tool_result = blocks
                         .iter()
                         .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"));
 
                     if is_tool_result {
-                        // Append tool results to the previous agent step's observation
                         append_tool_results(&mut steps, blocks);
                     } else {
-                        // Human user message → new user step
                         let mut message_text = String::new();
                         for block in blocks {
                             if block.get("type").and_then(|t| t.as_str()) == Some("text") {
@@ -112,36 +102,41 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                         }
                         if !message_text.is_empty() {
                             step_id += 1;
-                            steps.push(AtifStep {
+                            steps.push(Step {
                                 step_id,
                                 timestamp,
-                                source: "user".to_string(),
-                                message: Some(message_text),
+                                source: StepSource::User,
+                                message: message_text,
                                 model_name: None,
+                                reasoning_effort: None,
                                 reasoning_content: None,
                                 tool_calls: None,
                                 observation: None,
                                 metrics: None,
                                 extra: None,
+                                llm_call_count: None,
+                                is_copied_context: None,
                             });
                         }
                     }
                 } else if let Some(content_str) =
                     event.pointer("/message/content").and_then(|c| c.as_str())
                 {
-                    // Simple string content
                     step_id += 1;
-                    steps.push(AtifStep {
+                    steps.push(Step {
                         step_id,
                         timestamp,
-                        source: "user".to_string(),
-                        message: Some(content_str.to_string()),
+                        source: StepSource::User,
+                        message: content_str.to_string(),
                         model_name: None,
+                        reasoning_effort: None,
                         reasoning_content: None,
                         tool_calls: None,
                         observation: None,
                         metrics: None,
                         extra: None,
+                        llm_call_count: None,
+                        is_copied_context: None,
                     });
                 }
             }
@@ -149,18 +144,18 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                 let timestamp = event
                     .get("timestamp")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                    .map(String::from);
                 let step_model = event
                     .pointer("/message/model")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .map(String::from)
                     .or_else(|| model_name.clone());
 
                 let content_arr = event.pointer("/message/content").and_then(|c| c.as_array());
 
                 let mut message_text = String::new();
                 let mut reasoning = String::new();
-                let mut tool_calls: Vec<AtifToolCall> = Vec::new();
+                let mut tool_calls: Vec<ToolCall> = Vec::new();
 
                 if let Some(blocks) = content_arr {
                     for block in blocks {
@@ -197,10 +192,11 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                                     .unwrap_or("")
                                     .to_string();
                                 let input = block.get("input").cloned().unwrap_or(Value::Null);
-                                tool_calls.push(AtifToolCall {
+                                tool_calls.push(ToolCall {
                                     tool_call_id: id,
                                     function_name: name,
                                     arguments: input,
+                                    extra: None,
                                 });
                             }
                             _ => {}
@@ -209,16 +205,13 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                 }
 
                 step_id += 1;
-                steps.push(AtifStep {
+                steps.push(Step {
                     step_id,
                     timestamp,
-                    source: "agent".to_string(),
-                    message: if message_text.is_empty() {
-                        None
-                    } else {
-                        Some(message_text)
-                    },
+                    source: StepSource::Agent,
+                    message: message_text,
                     model_name: step_model,
+                    reasoning_effort: None,
                     reasoning_content: if reasoning.is_empty() {
                         None
                     } else {
@@ -232,15 +225,17 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
                     observation: None,
                     metrics: None,
                     extra: None,
+                    llm_call_count: None,
+                    is_copied_context: None,
                 });
             }
             _ => {}
         }
     }
 
-    let total_steps = steps.len() as u32;
+    let total_steps = steps.len();
 
-    let agent = AtifAgent {
+    let agent = Agent {
         name: if agent_name.is_empty() {
             "unknown".to_string()
         } else {
@@ -256,37 +251,41 @@ pub fn convert_jsonl_content_to_atif(content: &str) -> anyhow::Result<AtifDocume
         extra: None,
     };
 
-    let final_metrics = AtifFinalMetrics {
+    let final_metrics = FinalMetrics {
         total_prompt_tokens: None,
         total_completion_tokens: None,
         total_cached_tokens: None,
+        total_cost_usd: None,
         total_steps: Some(total_steps),
         extra: None,
     };
 
-    Ok(AtifDocument {
-        schema_version: SCHEMA_VERSION.to_string(),
-        session_id: if session_id.is_empty() {
+    Ok(AtifTrajectory {
+        schema_version: ATIF_SCHEMA_VERSION.to_string(),
+        session_id: Some(if session_id.is_empty() {
             "unknown".to_string()
         } else {
             session_id
-        },
+        }),
         agent,
         steps,
+        trajectory_id: None,
+        notes: None,
         final_metrics: Some(final_metrics),
+        continued_trajectory_ref: None,
+        subagent_trajectories: None,
         extra: None,
     })
 }
 
-/// Append tool_result blocks to the last agent step's observation.
-fn append_tool_results(steps: &mut [AtifStep], blocks: &[Value]) {
-    let last_agent_step = steps.iter_mut().rev().find(|s| s.source == "agent");
+fn append_tool_results(steps: &mut [Step], blocks: &[Value]) {
+    let last_agent_step = steps.iter_mut().rev().find(|s| s.source == StepSource::Agent);
     let step = match last_agent_step {
         Some(s) => s,
         None => return,
     };
 
-    let observation = step.observation.get_or_insert(AtifObservation {
+    let observation = step.observation.get_or_insert(Observation {
         results: Vec::new(),
     });
 
@@ -298,14 +297,16 @@ fn append_tool_results(steps: &mut [AtifStep], blocks: &[Value]) {
         let source_call_id = block
             .get("tool_use_id")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(String::from);
         let content = block
             .get("content")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        observation.results.push(AtifObservationResult {
+            .map(String::from);
+        observation.results.push(ObservationResult {
             source_call_id,
-            content,
+            content: content.map(serde_json::Value::String),
+            subagent_trajectory_ref: None,
+            extra: None,
         });
     }
 }
