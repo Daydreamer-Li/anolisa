@@ -15,9 +15,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// Embedded frontend static files (built from dashboard/ via `npm run build:embed`)
-/// The directory `frontend-dist/` must exist at compile time; if it is absent
-/// (e.g. first build before running npm), Rust will use an empty dir.
-static FRONTEND: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/frontend-dist");
+/// Output goes to the agentsight crate root's `frontend-dist/` directory.
+/// When absent (e.g. first build before running npm), include_dir! embeds an
+/// empty dir and the server prints a warning.
+static FRONTEND: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../frontend-dist");
 
 // ─── Static file handler ─────────────────────────────────────────────────────
 
