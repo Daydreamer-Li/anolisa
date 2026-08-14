@@ -220,5 +220,5 @@ test('terminal containment lifecycle overrides historical blocked time', () => {
     blocked_at_ns: 10,
   });
 
-  assert.equal(presentation.label, '已到期');
+  assert.equal(presentation.labelKey, 'cont.lifecycle.expired.label');
 });

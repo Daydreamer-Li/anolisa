@@ -13,8 +13,7 @@ import {
   fetchConversationInterruptions,
   resolveInterruption,
 } from '../utils/apiClient';
-import { useI18n, useLocaleTag } from '../i18n';
-import type { MessageKey } from '../i18n';
+import { useI18n, useLocaleTag, interruptionTypeKey } from '../i18n';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -23,14 +22,6 @@ const SEVERITY_DOT: Record<InterruptionSeverity, string> = {
   high:     'bg-orange-500',
   medium:   'bg-yellow-400',
   low:      'bg-blue-400',
-};
-
-const TYPE_LABEL_KEY: Record<string, MessageKey> = {
-  llm_error:        'comp.interrupt.type.llmError',
-  sse_truncated:    'comp.interrupt.type.sseTruncated',
-  agent_crash:      'comp.interrupt.type.agentCrash',
-  token_limit:      'comp.interrupt.type.tokenLimit',
-  context_overflow: 'comp.interrupt.type.contextOverflow',
 };
 
 function formatNs(ns: number, locale: string): string {
@@ -66,7 +57,7 @@ const InterruptionRow: React.FC<RowProps> = ({ event, onResolved }) => {
   const [resolveErr, setResolveErr] = useState<string | null>(null);
 
   const dotStyle = SEVERITY_DOT[event.severity as InterruptionSeverity] ?? 'bg-gray-400';
-  const typeKey = TYPE_LABEL_KEY[event.interruption_type];
+  const typeKey = interruptionTypeKey(event.interruption_type);
   const typeLabel = typeKey ? t(typeKey) : event.interruption_type;
 
   const handleResolve = async () => {

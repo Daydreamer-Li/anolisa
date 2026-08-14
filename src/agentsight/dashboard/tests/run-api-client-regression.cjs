@@ -21,6 +21,11 @@ try {
       'es2020',
       '--lib',
       'es2020,dom',
+      // containmentLifecycle.ts type-imports MessageKey from i18n.tsx, so the
+      // compiler needs JSX support to resolve that module.
+      '--jsx',
+      'react-jsx',
+      '--esModuleInterop',
       'src/utils/apiClient.ts',
       'src/utils/containmentLifecycle.ts',
       'tests/apiClient-globals.d.ts',

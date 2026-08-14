@@ -5,11 +5,10 @@ import {
   restartAgentHealth,
   fetchInterruptions,
   resolveInterruption,
-  INTERRUPTION_TYPE_CN,
 } from '../utils/apiClient';
 import type { InterruptionRecord, InterruptionSeverity } from '../utils/apiClient';
 import type { AgentHealthStatus } from '../types';
-import { useI18n, useLocaleTag } from '../i18n';
+import { useI18n, useLocaleTag, INTERRUPTION_TYPES, interruptionTypeKey } from '../i18n';
 import type { MessageKey } from '../i18n';
 
 // ─── Agent status section ─────────────────────────────────────────────────────
@@ -514,7 +513,8 @@ const InterruptionEventRow: React.FC<{
   const [resolving, setResolving] = useState(false);
 
   const dotStyle = SEVERITY_DOT[event.severity] ?? 'bg-gray-400';
-  const typeLabel = event.interruption_type;
+  const itypeKey = interruptionTypeKey(event.interruption_type);
+  const typeLabel = itypeKey ? t(itypeKey) : event.interruption_type;
   const sevKey = SEVERITY_LABEL_KEY[event.severity];
 
   const handleResolve = async () => {
@@ -680,11 +680,14 @@ const InterruptionSection: React.FC<{ addToast: (msg: string) => void }> = ({ ad
           </select>
           <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className={selectClass}>
             <option value="">{t('common.allTypes')}</option>
-            {Object.keys(INTERRUPTION_TYPE_CN).map(k => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
+            {INTERRUPTION_TYPES.map(k => {
+              const key = interruptionTypeKey(k);
+              return (
+                <option key={k} value={k}>
+                  {key ? t(key) : k}
+                </option>
+              );
+            })}
           </select>
           <select
             value={severityFilter}

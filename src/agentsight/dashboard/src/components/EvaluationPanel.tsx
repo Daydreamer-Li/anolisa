@@ -4,11 +4,10 @@ import {
   EvaluationNotReadyError,
   EvaluationRef,
   EvaluationResult,
-  INTERRUPTION_TYPE_CN,
   evaluateConversation,
 } from '../utils/apiClient';
 import { EvaluationBadge } from './EvaluationBadge';
-import { useI18n } from '../i18n';
+import { useI18n, interruptionTypeKey } from '../i18n';
 import type { MessageKey } from '../i18n';
 
 interface EvaluationPanelProps {
@@ -287,7 +286,8 @@ const FINDING_KEY: Record<string, MessageKey> = {
 function findingLabel(value: string, t: TFunc): string {
   const key = FINDING_KEY[value];
   if (key) return t(key);
-  return INTERRUPTION_TYPE_CN[value] ?? value;
+  const typeKey = interruptionTypeKey(value);
+  return typeKey ? t(typeKey) : value;
 }
 
 function findingMessageText(value: string): string {
