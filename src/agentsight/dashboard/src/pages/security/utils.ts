@@ -1,4 +1,5 @@
 import { SecurityApiClientError } from '../../utils/apiClient';
+import type { MessageKey } from '../../i18n';
 import type {
   SecurityCountItem,
   SecurityEventRecord,
@@ -53,12 +54,15 @@ export function fmtTime(input: Parameters<typeof timestampToMs>[0]): string {
   });
 }
 
-export function errorMessage(error: unknown): string {
+export function errorMessage(
+  error: unknown,
+  t?: (key: MessageKey) => string,
+): string {
   if (error instanceof SecurityApiClientError) {
     return `${error.code}: ${error.message}`;
   }
   if (error instanceof Error) return error.message;
-  return '安全观测接口请求失败';
+  return t ? t('sec.apiRequestFailed') : 'Security observability API request failed';
 }
 
 export function mapToCountItems(map: Record<string, number> | undefined): SecurityCountItem[] {
@@ -288,20 +292,21 @@ export function fmtPercent(numerator: number, denominator: number): string {
   return value >= 10 ? `${Math.round(value)}%` : `${value.toFixed(1)}%`;
 }
 
-export function stateLabel(state: string): string {
-  const labels: Record<string, string> = {
-    daemon_reachable: 'daemon 可达',
-    disabled: '已禁用',
-    daemon_unreachable: 'daemon 不可达',
-    store_unavailable: '数据不可用',
-    schema_mismatch: 'schema 不兼容',
-    ok: '正常',
-    empty: '无数据',
-    partial: '部分数据',
-    found: '已找到',
-    not_found: '未找到',
-  };
-  return labels[state] ?? state;
+const STATE_LABEL_KEY: Record<string, MessageKey> = {
+  daemon_reachable: 'sec.daemonReachable',
+  disabled: 'sec.disabled',
+  daemon_unreachable: 'sec.daemonUnreachable',
+  store_unavailable: 'sec.storeUnavailable',
+  schema_mismatch: 'sec.schemaMismatch',
+  ok: 'sec.ok',
+  empty: 'sec.empty',
+  partial: 'sec.partial',
+  found: 'sec.found',
+  not_found: 'sec.notFound',
+};
+
+export function stateLabelKey(state: string): MessageKey | null {
+  return STATE_LABEL_KEY[state] ?? null;
 }
 
 export function stateClasses(state: string): string {
