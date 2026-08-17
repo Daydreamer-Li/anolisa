@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { useI18n, useLocaleTag } from '../../i18n';
 import type { SecurityEventRecord } from '../../utils/apiClient';
 import { badgeClasses, fmtTime, securityEventVerdict, verdictBadgeClasses } from './utils';
 
@@ -8,6 +8,7 @@ export const RecentEvents: React.FC<{
   onSelect: (eventId: string) => void;
 }> = ({ events, onSelect }) => {
   const { t } = useI18n();
+  const locale = useLocaleTag();
   const columns = 'grid-cols-[128px_120px_minmax(180px,1fr)_110px_110px]';
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -34,7 +35,7 @@ export const RecentEvents: React.FC<{
                   onClick={() => onSelect(event.event_id)}
                   className={`grid w-full ${columns} items-center gap-3 px-4 py-3 text-left hover:bg-gray-50`}
                 >
-                  <span className="text-xs text-gray-500">{fmtTime(event)}</span>
+                  <span className="text-xs text-gray-500">{fmtTime(event, locale)}</span>
                   <span className={`w-fit rounded px-2 py-0.5 text-xs font-medium ${badgeClasses(event.category, 'category')}`}>
                     {event.category ?? '-'}
                   </span>

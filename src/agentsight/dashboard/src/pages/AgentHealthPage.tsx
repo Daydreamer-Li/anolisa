@@ -10,6 +10,7 @@ import type { InterruptionRecord, InterruptionSeverity } from '../utils/apiClien
 import type { AgentHealthStatus } from '../types';
 import { useI18n, useLocaleTag, INTERRUPTION_TYPES, interruptionTypeKey } from '../i18n';
 import type { MessageKey } from '../i18n';
+import { formatNs } from '../utils/datetime';
 
 // ─── Agent status section ─────────────────────────────────────────────────────
 
@@ -421,10 +422,6 @@ const TIME_RANGE_KEYS: { labelKey: MessageKey; hours: number }[] = [
   { labelKey: 'ah.last24Hours', hours: 24 },
   { labelKey: 'ah.last7Days', hours: 24 * 7 },
 ];
-
-function formatNs(ns: number, locale: string): string {
-  return new Date(ns / 1_000_000).toLocaleString(locale);
-}
 
 function parseDetail(raw: string | null, t: (key: MessageKey) => string): React.ReactNode {
   if (!raw) return <span className="text-xs text-gray-400">{t('ah.noDetails')}</span>;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { useI18n, useLocaleTag } from '../../i18n';
 import type {
   SecurityApiResponse,
   SecurityEventRecord,
@@ -25,6 +25,7 @@ export const EventTable: React.FC<{
   onViewTimeline?: (sessionId: string, runId: string) => void;
 }> = ({ response, loading, error, onSelect, onPage, onViewTimeline }) => {
   const { t } = useI18n();
+  const locale = useLocaleTag();
   const data = response?.data;
   const items = data?.items ?? [];
   const previousOffset = Math.max(0, (data?.offset ?? 0) - (data?.limit ?? EVENT_PAGE_SIZE));
@@ -73,7 +74,7 @@ export const EventTable: React.FC<{
                     onClick={() => onSelect(event.event_id)}
                     className="cursor-pointer hover:bg-gray-50"
                   >
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">{fmtTime(event)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">{fmtTime(event, locale)}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded px-2 py-0.5 text-xs font-medium ${badgeClasses(event.category, 'category')}`}>
                         {event.category ?? '-'}

@@ -3,6 +3,7 @@ import type { SecurityContainmentAction } from '../utils/apiClient';
 import { containmentLifecyclePresentation } from '../utils/containmentLifecycle';
 import { useI18n, useLocaleTag } from '../i18n';
 import type { MessageKey } from '../i18n';
+import { formatNsCompact } from '../utils/datetime';
 
 interface ContainmentLifecycleCardProps {
   action: SecurityContainmentAction | null;
@@ -22,17 +23,6 @@ const failureStageLabel: Record<
   detach: 'cont.failureStage.detach',
   reconcile: 'cont.failureStage.reconcile',
 };
-
-function formatNs(timestampNs: number | null, localeTag: string): string {
-  if (!timestampNs) return '—';
-  return new Intl.DateTimeFormat(localeTag, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(timestampNs / 1_000_000);
-}
 
 function formatRemaining(
   expiresAtNs: number,
@@ -135,7 +125,7 @@ export const ContainmentLifecycleCard: React.FC<ContainmentLifecycleCardProps> =
             <dt className="text-xs text-gray-500">{t('cont.lifecycle.field.expiresAt')}</dt>
             <dd className="mt-1 text-gray-900">
               {action.expires_at_ns
-                ? formatNs(action.expires_at_ns, localeTag)
+                ? formatNsCompact(action.expires_at_ns, localeTag)
                 : t('cont.lifecycle.expires.persistent')}
             </dd>
           </div>
@@ -149,7 +139,7 @@ export const ContainmentLifecycleCard: React.FC<ContainmentLifecycleCardProps> =
           </div>
           <div>
             <dt className="text-xs text-gray-500">{t('cont.lifecycle.field.firstBlocked')}</dt>
-            <dd className="mt-1 text-gray-900">{formatNs(action.blocked_at_ns, localeTag)}</dd>
+            <dd className="mt-1 text-gray-900">{formatNsCompact(action.blocked_at_ns, localeTag)}</dd>
           </div>
           <div>
             <dt className="text-xs text-gray-500">{t('cont.lifecycle.field.failureStage')}</dt>

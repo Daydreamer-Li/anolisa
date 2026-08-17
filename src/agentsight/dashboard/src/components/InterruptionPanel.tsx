@@ -14,6 +14,7 @@ import {
   resolveInterruption,
 } from '../utils/apiClient';
 import { useI18n, useLocaleTag, interruptionTypeKey } from '../i18n';
+import { formatNs } from '../utils/datetime';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -23,10 +24,6 @@ const SEVERITY_DOT: Record<InterruptionSeverity, string> = {
   medium:   'bg-yellow-400',
   low:      'bg-blue-400',
 };
-
-function formatNs(ns: number, locale: string): string {
-  return new Date(ns / 1_000_000).toLocaleString(locale);
-}
 
 function parseDetail(raw: string | null): React.ReactNode {
   if (!raw) return null;

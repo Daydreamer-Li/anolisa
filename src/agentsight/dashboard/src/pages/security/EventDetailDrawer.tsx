@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { useI18n, useLocaleTag } from '../../i18n';
 import type {
   SecurityApiResponse,
   SecurityEventDetailResponse,
@@ -17,6 +17,7 @@ export const EventDetailDrawer: React.FC<{
   onRetry: () => void;
 }> = ({ eventId, detail, loading, error, onClose, onRetry }) => {
   const { t } = useI18n();
+  const locale = useLocaleTag();
   const event = detail?.data.event;
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black bg-opacity-30">
@@ -71,7 +72,7 @@ export const EventDetailDrawer: React.FC<{
 
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
-                  [t('common.time'), fmtTime(event)],
+                  [t('common.time'), fmtTime(event, locale)],
                   [t('sec.category'), event.category ?? '-'],
                   [t('sec.result'), event.result ?? '-'],
                   [t('sec.verdict'), securityEventVerdict(event)],

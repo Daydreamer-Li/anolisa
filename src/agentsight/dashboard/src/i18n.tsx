@@ -80,7 +80,6 @@ const enUSMessages = {
   'common.input': 'Input',
   'common.output': 'Output',
   'common.total': 'Total',
-  'common.saved': 'Saved',
   'common.original': 'Original',
   'common.optimized': 'Optimized',
   'common.noChange': 'No change',
@@ -353,6 +352,10 @@ const enUSMessages = {
   'sec.category': 'Category',
   'sec.result': 'Result',
   'sec.verdict': 'Verdict',
+  'sec.detail.verdict': 'Verdict',
+  'sec.detail.error': 'Error',
+  'sec.detail.reason': 'Reason',
+  'sec.detail.finding': 'Finding',
   'sec.session': 'Session',
   'sec.run': 'Run',
   'sec.call': 'Call',
@@ -993,7 +996,9 @@ const enUSMessages = {
 
 export type MessageKey = keyof typeof enUSMessages;
 
-const messages: Record<Locale, Record<MessageKey, string>> = {
+// Exported for the i18n regression test (placeholder consistency checks);
+// application code should always go through `t()`.
+export const messages: Record<Locale, Record<MessageKey, string>> = {
   'en-US': enUSMessages,
   'zh-CN': {
     // ── App / Nav / Login ──
@@ -1056,7 +1061,6 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'common.input': '输入',
     'common.output': '输出',
     'common.total': '总计',
-    'common.saved': '已节省',
     'common.original': '原始内容',
     'common.optimized': '优化后',
     'common.noChange': '无变更',
@@ -1288,7 +1292,7 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'cl.unknownModel': '未知模型',
     'cl.queryFailed': '查询失败',
     'cl.loadingEllipsis': '加载中...',
-    'cl.totalTokens': '总计 Tokens',
+    'cl.totalTokens': '总 Token 数',
 
     // ── Security ──
     'sec.securityObservability': '安全可观测',
@@ -1329,6 +1333,10 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'sec.category': '类别',
     'sec.result': '结果',
     'sec.verdict': 'Verdict',
+    'sec.detail.verdict': 'Verdict',
+    'sec.detail.error': '错误',
+    'sec.detail.reason': '原因',
+    'sec.detail.finding': '发现',
     'sec.session': 'Session',
     'sec.run': 'Run',
     'sec.call': 'Call',

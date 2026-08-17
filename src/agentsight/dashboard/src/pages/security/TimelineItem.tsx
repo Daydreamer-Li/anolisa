@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { useI18n, useLocaleTag } from '../../i18n';
 import type { SecurityTimelineItem } from '../../utils/apiClient';
 import {
   badgeClasses,
@@ -19,6 +19,7 @@ export const TimelineItem: React.FC<{
   onSelectEvent: (eventId: string) => void;
 }> = ({ item, observabilityItemsById, onSelectEvent }) => {
   const { t } = useI18n();
+  const locale = useLocaleTag();
   const securityEvent = item.kind === 'security' ? item.event : undefined;
   const observabilityContext = timelineObservabilityContext(item, observabilityItemsById);
   const eventTitle = securityEvent?.event_type ?? securityEvent?.event_id;
@@ -59,7 +60,7 @@ export const TimelineItem: React.FC<{
               {item.redacted && <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">{t('sec.redacted')}</span>}
               {item.truncated && <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">{t('sec.truncated')}</span>}
             </div>
-            <p className="mt-1 text-xs text-gray-500">{fmtTime(item)}</p>
+            <p className="mt-1 text-xs text-gray-500">{fmtTime(item, locale)}</p>
           </div>
           {item.match && (
             <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">
@@ -93,9 +94,9 @@ export const TimelineItem: React.FC<{
             {detailRows.length > 0 && (
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 {detailRows.map((row) => (
-                  <div key={row.label} className="rounded border border-white/60 bg-white/70 px-3 py-2">
-                    <p className={`text-xs ${securityClasses.detailLabel}`}>{row.label}</p>
-                    <p className={`mt-1 break-words font-mono text-xs ${row.label === 'verdict' ? verdictBadgeClasses(row.value) : securityClasses.detailValue} ${row.label === 'verdict' ? 'inline-block rounded px-2 py-0.5' : ''}`}>
+                  <div key={row.id} className="rounded border border-white/60 bg-white/70 px-3 py-2">
+                    <p className={`text-xs ${securityClasses.detailLabel}`}>{t(row.labelKey)}</p>
+                    <p className={`mt-1 break-words font-mono text-xs ${row.id === 'verdict' ? verdictBadgeClasses(row.value) : securityClasses.detailValue} ${row.id === 'verdict' ? 'inline-block rounded px-2 py-0.5' : ''}`}>
                       {row.value}
                     </p>
                   </div>

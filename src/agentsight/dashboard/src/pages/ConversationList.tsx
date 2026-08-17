@@ -12,6 +12,7 @@ import { DateTimePicker } from '../components/DateTimePicker';
 import { SessionIdHelp } from '../components/SessionIdHelp';
 import { useI18n, useLocaleTag } from '../i18n';
 import type { MessageKey } from '../i18n';
+import { formatNsPadded as nsToDate } from '../utils/datetime';
 import {
   fetchSessions,
   fetchTraces,
@@ -37,18 +38,6 @@ import {
 } from '../utils/apiClient';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Convert nanoseconds to a display string */
-function nsToDate(ns: number, locale: string): string {
-  return new Date(ns / 1_000_000).toLocaleString(locale, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
 
 /** Truncate a long ID for display */
 function shortId(id: string, len = 16): string {

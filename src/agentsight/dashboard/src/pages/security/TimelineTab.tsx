@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { useI18n, useLocaleTag } from '../../i18n';
 import type {
   SecurityApiResponse,
   SecurityEventRecord,
@@ -57,6 +57,7 @@ export const TimelineTab: React.FC<{
   onSelectEvent,
 }) => {
   const { t } = useI18n();
+  const locale = useLocaleTag();
   return (
   <section className="space-y-4">
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
@@ -88,7 +89,7 @@ export const TimelineTab: React.FC<{
             <option value="">-</option>
             {(securityRuns?.data.items ?? []).map((run) => (
               <option key={run.run_id} value={run.run_id}>
-                {shortId(run.run_id, 40)} · {run.user_input_preview ?? fmtTime(run)}
+                {shortId(run.run_id, 40)} · {run.user_input_preview ?? fmtTime(run, locale)}
               </option>
             ))}
           </select>
