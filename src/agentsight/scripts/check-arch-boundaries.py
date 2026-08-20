@@ -31,6 +31,7 @@ LAYER_MAP = {
     "security":    7,   # L7: Security audit and containment
     "server":      7,   # L7: Serve
     "health":      7,   # L7: Serve
+    "preferences": 7,   # L7: Serve (on-demand analysis shared by both servers)
     "bin":         8,   # L8: Entry
     "unified":     8,   # L8: Entry
     "config":      8,   # L8: Entry
@@ -59,7 +60,11 @@ ALLOWED_DEPS = {
         "grader",
         "enforcement",
         "security",
+        "preferences",
     },
+    # Same-layer peer of `server`: a transport-agnostic contract the Linux and
+    # macOS handlers share, so it may only read downwards.
+    "preferences": {"genai", "storage", "atif"},
     "agent_sec":   set(),
     "health":      {"storage"},
     "unified":     "*",

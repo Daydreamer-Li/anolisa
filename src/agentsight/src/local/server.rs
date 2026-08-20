@@ -6,6 +6,7 @@
 mod agents;
 mod local_sessions;
 mod optimize;
+mod preferences;
 mod trajectories;
 
 use actix_cors::Cors;
@@ -437,6 +438,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             .service(optimize::get_optimize_config)
             .service(optimize::update_optimize_config)
             .service(optimize::semantic_search_sessions)
+            // User preference analysis API (registered before api_fallback)
+            .service(preferences::export_preferences)
+            .service(preferences::get_preferences)
             .service(export_atif_unavailable)
             // Catch-all for unregistered API endpoints (returns empty array)
             .service(api_fallback)

@@ -14,8 +14,8 @@ pub mod qoder;
 pub mod store;
 
 pub use store::{
-    TrajectoryAgentActivitySummary, TrajectoryFilters, TrajectoryRecord, TrajectoryStore,
-    TrajectorySummary,
+    strip_system_context, TrajectoryAgentActivitySummary, TrajectoryFilters, TrajectoryRecord,
+    TrajectoryStore, TrajectorySummary,
 };
 
 use std::path::PathBuf;

@@ -117,7 +117,9 @@ impl OptimizeState {
         self.config.read().map(|c| c.clone()).unwrap_or_default()
     }
 
-    fn build_client(&self) -> Result<LlmClient, HttpResponse> {
+    // `pub(super)` so the sibling preferences module can reuse the same
+    // configured client for its optional LLM layer.
+    pub(super) fn build_client(&self) -> Result<LlmClient, HttpResponse> {
         let config = self.snapshot();
         let Some(api_key) = config.effective_api_key() else {
             return Err(HttpResponse::BadRequest().json(serde_json::json!({

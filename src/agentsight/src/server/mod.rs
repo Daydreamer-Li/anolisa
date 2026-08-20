@@ -10,6 +10,7 @@ mod containment;
 mod enforcement;
 mod handlers;
 pub mod optimize;
+mod preferences;
 mod secret;
 pub mod semantic_search;
 mod system_audit;
@@ -288,6 +289,9 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .service(optimize::get_optimize_config)
                 .service(optimize::update_optimize_config)
                 .service(optimize::semantic_search_sessions)
+                // User preference analysis API routes (export before the shorter path)
+                .service(preferences::export_preferences)
+                .service(preferences::get_preferences)
                 // Causal attribution API routes
                 .service(causal::run_causal_attribution)
                 // Trajectory collection API routes (filters before the dynamic segment)
@@ -530,6 +534,16 @@ const API_ROUTES: &[(&str, &str, &str)] = &[
     ),
     ("GET", "/api/optimize/config", "Optimization config"),
     ("POST", "/api/optimize/config", "Update optimization config"),
+    (
+        "GET",
+        "/api/preferences",
+        "User preference analysis (rule + optional LLM)",
+    ),
+    (
+        "GET",
+        "/api/preferences/export",
+        "User preferences as Markdown",
+    ),
     ("POST", "/api/causal-attribution", "Run causal attribution"),
     ("GET", "/api/trajectories", "List collected trajectories"),
     (

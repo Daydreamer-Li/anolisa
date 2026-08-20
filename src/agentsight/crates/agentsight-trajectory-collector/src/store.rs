@@ -366,6 +366,44 @@ impl TrajectoryStore {
         Ok(out)
     }
 
+    /// Returns `(session_id, atif_json)` of the most recent main-agent
+    /// trajectories collected at or after `since_collected_at_ns`, newest
+    /// first, capped at `limit`.
+    ///
+    /// Read-only, built for preference analysis: subagent rows are excluded
+    /// because their "user" steps are the parent agent's instructions, not
+    /// genuine user input. The window filter uses `collected_at_ns` (always
+    /// present, monotonic i64) rather than the optional ISO `start_time` /
+    /// `end_time` strings.
+    ///
+    /// Memory / locking: the result holds the complete ATIF JSON string of
+    /// every matched row — a single call can return tens of MB — and the
+    /// store's connection mutex stays held while the rows are collected.
+    /// Callers must keep `limit` conservative and avoid concurrent calls.
+    ///
+    /// # Errors
+    /// Returns an error on SQL failure or poisoned mutex.
+    pub fn list_recent_atif_jsons(
+        &self,
+        since_collected_at_ns: i64,
+        limit: i64,
+    ) -> Result<Vec<(String, String)>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id, atif_json FROM collected_trajectories
+             WHERE collected_at_ns >= ?1 AND is_subagent = 0
+             ORDER BY collected_at_ns DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![since_collected_at_ns, limit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Returns the stored ATIF v1.7 JSON for one session, if present.
     ///
     /// # Errors
@@ -519,7 +557,14 @@ const SYSTEM_TAG_PAIRS: &[(&str, &str)] = &[
 
 /// Remove system-injected tag blocks from a user message. An unterminated
 /// opening tag swallows the rest of the text (matches AgentOpt semantics).
-fn strip_system_context(text: &str) -> String {
+/// Public because preference analysis needs the same cleaning when it reads
+/// user turns straight out of stored ATIF steps.
+///
+/// Stable contract for external callers: only the `SYSTEM_TAG_PAIRS`
+/// blocks are removed; user-authored text outside those blocks is preserved
+/// verbatim, apart from collapsing the blank runs the removal leaves behind
+/// and trimming the edges.
+pub fn strip_system_context(text: &str) -> String {
     let mut result = text.to_string();
     for &(open, close) in SYSTEM_TAG_PAIRS {
         while let Some(start) = result.find(open) {
@@ -762,6 +807,32 @@ mod tests {
         );
         // limit caps the result
         assert_eq!(store.list_summaries(None, None, None, 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_list_recent_atif_jsons_window_limit_and_subagents() {
+        let store = TrajectoryStore::new_with_path(&tmp_db("recent")).unwrap();
+        for (id, is_subagent) in [("m-1", false), ("m-2", false), ("m-1:subagent:x", true)] {
+            let mut rec = sample_record();
+            rec.session_id = id.into();
+            rec.is_subagent = is_subagent;
+            store.upsert_trajectory(&rec).unwrap();
+        }
+
+        // Subagent rows never appear; the newest row comes first.
+        let rows = store.list_recent_atif_jsons(0, 100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(id, _)| !id.contains("subagent")));
+        assert_eq!(rows[0].1, sample_record().atif_json);
+
+        // The limit caps the result set.
+        assert_eq!(store.list_recent_atif_jsons(0, 1).unwrap().len(), 1);
+
+        // A window bound in the future excludes everything.
+        assert!(store
+            .list_recent_atif_jsons(i64::MAX, 100)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

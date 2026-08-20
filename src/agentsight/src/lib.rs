@@ -27,6 +27,9 @@ pub mod chrome_trace;
 pub mod config;
 pub mod ecs_metadata;
 mod logging;
+// Cross-platform: rules run over either genai events (Linux) or collected
+// trajectories (all OSes); only the genai provider inside is Linux-gated.
+pub mod preferences;
 mod private_sqlite;
 pub mod security;
 pub mod tokenizer;
