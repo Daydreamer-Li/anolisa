@@ -99,7 +99,8 @@ curl -s -H "Authorization: Bearer $TOKEN" http://<host>:7396/api/sessions
 | Agent 健康 | `GET /api/agent-health`、`DELETE /api/agent-health/{pid}`、`POST /api/agent-health/{pid}/restart` | 实时状态与恢复动作 |
 | Token 节省 | `GET /api/token-savings`、`GET /api/token-savings/session/{id}` | Tokenless 节省量 |
 | ATIF 导出 | `GET /api/export/atif/session/{id}`（还有 `trace`、`conversation`） | 轨迹导出 |
-| 轨迹 | `GET /api/trajectories`、`/filters`、`/{session_id}` | 已采集轨迹 |
+| 轨迹 | `GET /api/trajectories`、`/filters`、`/steps`、`/{session_id}` | 已采集轨迹 |
+| 偏好 | `GET /api/preferences`、`/export`、`/turns` | 用户偏好分析、Markdown 导出，以及供 Agent 侧推理使用的用户原始轮次 |
 | Skill 指标 | `GET /api/skill-metrics`、`/downloads`、`/loads`、`/usage-ratio`、`/distribution`、`/hotness` | Skill 采纳情况 |
 | 优化分析 | `POST /api/optimize/sessions/{id}/{dimension}`、`GET /api/optimize/results`、`GET` 与 `POST /api/optimize/config` | LLM 辅助分析 |
 | 质量与归因 | `POST /api/grader/evaluate`、`GET /api/grader/latest`、`POST /api/causal-attribution` | 会话质量评分、根因归因 |

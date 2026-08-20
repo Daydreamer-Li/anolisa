@@ -106,7 +106,8 @@ Endpoint groups in 0.11:
 | Agent health | `GET /api/agent-health`, `DELETE /api/agent-health/{pid}`, `POST /api/agent-health/{pid}/restart` | Live Agent state and recovery actions |
 | Token savings | `GET /api/token-savings`, `GET /api/token-savings/session/{id}` | Tokenless savings |
 | ATIF export | `GET /api/export/atif/session/{id}` (also `trace` and `conversation`) | Trajectory export |
-| Trajectories | `GET /api/trajectories`, `/filters`, `/{session_id}` | Collected trajectories |
+| Trajectories | `GET /api/trajectories`, `/filters`, `/steps`, `/{session_id}` | Collected trajectories |
+| Preferences | `GET /api/preferences`, `/export`, `/turns` | User preference analysis, Markdown export, and source user turns for agent-side reasoning |
 | Skill metrics | `GET /api/skill-metrics`, `/downloads`, `/loads`, `/usage-ratio`, `/distribution`, `/hotness` | Skill adoption |
 | Optimization | `POST /api/optimize/sessions/{id}/{dimension}`, `GET /api/optimize/results`, `GET` and `POST /api/optimize/config` | LLM-assisted analysis |
 | Quality and attribution | `POST /api/grader/evaluate`, `GET /api/grader/latest`, `POST /api/causal-attribution` | Session quality scoring, root-cause attribution |
