@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](../CHANGELOG.md)
 
 **Agent Security Core CLI** is a comprehensive security toolkit for AI Agents, providing system hardening, sandbox isolation, asset integrity verification, and security event tracking.
 
@@ -212,7 +212,10 @@ agent_sec_cli/
         ├── sandbox.py         # Sandbox backend
         ├── asset_verify.py    # Verification backend
         ├── summary.py         # Event summary backend
-        └── intent.py          # Intent analysis (future)
+        ├── code_scan.py       # Code scanner backend
+        ├── prompt_scan.py     # Rust-native prompt scanner adapter
+        ├── pii_scan.py        # PII scanner backend
+        └── skill_ledger.py    # Skill Ledger command backend
 ```
 
 ---
@@ -349,11 +352,12 @@ The `dev-tools/` directory contains developer guides and skills for adding new s
 
 ### Quick Start: Add a New Security Command
 
-Follow the step-by-step guide in [dev-tools/SKILL.md](dev-tools/SKILL.md) to:
+Follow the step-by-step guide in
+[dev-tools/backend-skill/SKILL.md](dev-tools/backend-skill/SKILL.md) to:
 
 1. **Add a CLI subcommand** - Define new command-line interface
 2. **Register a router** - Map action names to backend modules
-3. **Create a backend** - Implement security logic (Python or Rust)
+3. **Create a backend** - Implement security logic in Python or Rust
 4. **Integrate event logging** - Automatic security event tracking
 
 ### Architecture Overview
@@ -387,7 +391,7 @@ Use backend-skill in folder dev-tools to create a new rust backend called crypto
 
 | Resource | Location | Purpose |
 |----------|----------|---------|
-| Extension Guide | `dev-tools/backend-skill/SKILL.md` | Step-by-step tutorial for Rust & Python backends |
+| Extension Guide | `dev-tools/backend-skill/SKILL.md` | Step-by-step tutorial for Rust and Python backends |
 | Backend Templates | `dev-tools/backend-skill/templates/` | Python and Rust backend templates |
 | Backend Examples | `src/agent_sec_cli/security_middleware/backends/` | Reference implementations |
 | CLI Structure | `src/agent_sec_cli/cli.py` | Subcommand patterns |
@@ -409,7 +413,7 @@ We welcome contributions! Please see our [Contributing Guide](https://github.com
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](../LICENSE) file for details.
 
 ---
 

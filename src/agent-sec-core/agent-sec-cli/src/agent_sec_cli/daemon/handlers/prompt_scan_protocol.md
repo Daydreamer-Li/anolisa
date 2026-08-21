@@ -1,8 +1,24 @@
-# scan-prompt daemon protocol
+# [HISTORICAL] scan-prompt daemon protocol
 
-This document defines the response contract for the daemon `scan-prompt` method.
-It is the method-level contract for callers such as the CLI, Cosh hooks, and
-other subprocess clients.
+> **Historical document — not an active daemon contract.** The current daemon
+> no longer registers `scan-prompt`; prompt scanning runs through
+> `security_middleware` and the native Rust scanner. The authoritative current
+> daemon method catalogue is
+> [`docs/design/DAEMON_PROTOCOL_V1_zh.md`](../../../../../docs/design/DAEMON_PROTOCOL_V1_zh.md).
+> This file is retained as historical evidence for the retired preload design
+> and for the handler-registration/three-layer-response pattern reused by the
+> candidate `action.*` extension in the authoritative protocol. The extension
+> becomes a V2 contract only after asc-daemon-protocol Definition Review. It
+> does not reactivate the `scan-prompt` method by itself.
+> The body below is a retired snapshot that evolved across multiple revisions;
+> it is not a verbatim copy of commit
+> `ef0d75f27c389434cf6f4361f5dbcdeaff42ab72`. Normative words such as “must”
+> and “should” apply only to the retired implementation. Use `git show` on the
+> named commit for exact historical fields and validation behavior.
+
+The remainder records the retired response contract for the daemon
+`scan-prompt` method and its former callers. It is not a CURRENT, PRESERVE, or
+TARGET contract.
 
 ## Response layers
 

@@ -286,6 +286,113 @@ Important scope boundary: `agent-sec-cli capabilities` reads only the current CL
 
 Qwen Code PII currently has a specific compatibility fallback: `PII_CHECKER_HOOK_ENABLED` takes precedence, and legacy `PII_CHECKER_ENABLED` is consulted only when the new variable is absent. Do not generalize that fallback to other Agents unless their hook runtime implements it too.
 
+### 13. Rust Migration Architecture
+
+`docs/design/AGENT_SEC_RUST_MIGRATION_zh.md` is the repository source of truth
+for the V2 product architecture, process topology, crate boundaries, migration
+strategy, and the transition from the V1 implementation and contracts. Keep
+the complete rationale and all actionable constraints in repository-accessible
+documents; development or acceptance must not depend on a private document.
+
+The current six language-independent behavior contracts are:
+
+- `docs/design/DAEMON_CURRENT_BEHAVIOR_zh.md`
+- `docs/design/DAEMON_PROTOCOL_V1_zh.md`
+- `docs/design/DAEMON_JOB_CONTRACT_zh.md`
+- `docs/design/DAEMON_PROCESS_DEPLOYMENT_CONTRACT_zh.md`
+- `docs/design/SECURITY_MIDDLEWARE_CONTRACT_zh.md`
+- `docs/design/SECURITY_ACTIONS_REFERENCE_zh.md`
+
+`docs/design/RUST_SECURITY_CORE_EXECUTION_ARCHITECTURE_zh.md` is the current
+Rust-specific implementation proposal for the V1 middleware to V2 Action
+Runtime/CapabilityExecutor path and observability lifecycle. It is not a
+seventh behavior contract. Treat
+its `[OPEN]` items as unresolved until they are promoted into the relevant
+language-independent contract and executable fixtures.
+
+The six contracts freeze V1 facts, observable behavior, and regression oracles;
+they do not override the repository V2 migration architecture. Use the scope labels
+consistently: `[CURRENT]` is observable V1 behavior, `[PRESERVE V1]` is behavior
+that a supported compatibility surface must retain, `[TARGET V2]` is a target
+consistent with the repository V2 migration plan, `[SUPERSEDED]` is an earlier
+target replaced by that plan, and `[HISTORICAL]` is evidence only. A V1 interface may change only
+through explicit compatibility classification, a versioned replacement and an
+approved change record. Do not silently promote Python process layout, PyO3,
+per-user deployment, or another V1 implementation detail into a V2 product
+requirement.
+
+A change to a supported method, action, field, default, error, lifecycle event,
+redaction rule, state format, or side effect must update the relevant contract
+and executable V1/V2 conformance fixtures in the same change. Compatibility can
+be supplied by a Rust binary, protocol adapter, state migrator, or versioned
+interface; it does not require retaining Python in the V2 runtime.
+
+Daemon Job changes must update `DAEMON_JOB_CONTRACT_zh.md` and its `DJOB-*`
+fixtures. Keep long-lived service health separate from the most recent run
+outcome without requiring a generic dual-state-machine framework. For each
+concrete background service, define its trigger, readiness relationship,
+failure/retry boundary, cancellation, shutdown, health, logging, tracing, and
+restart behavior. Do not implement a generic periodic scheduler until a reviewed
+production consumer exists, and do not treat the current Python worker process
+or class hierarchy as a Rust compatibility requirement.
+
+Daemon entrypoint, package layout, systemd, runtime/singleton, identity,
+authorization, query scope, data-directory, or diagnostic-log changes must update
+`DAEMON_PROCESS_DEPLOYMENT_CONTRACT_zh.md` and its `DPROC-*` fixtures. Do not
+treat systemd `active` as daemon readiness, and do not use local-only sidecar or
+healthcheck files that are absent from main as CURRENT/PRESERVE evidence.
+
+1. V2 product runtime code is Rust, including `asc-cli`, `asc-daemon`, security
+   capabilities, Policy Engine, JobSupervisor, state migration, and delivery
+   entrypoints. V1 Python code is an oracle and migration input, not a V2
+   runtime dependency.
+2. V2 uses one `asc-daemon` per host as a system-level service: system-scope
+   systemd on Linux and one DaemonSet instance per Kubernetes node. Do not add a
+   per-user/user-session daemon or place V2 socket/state ownership under HOME or
+   `$XDG_RUNTIME_DIR`.
+3. `asc-cli` is a Rust daemon client. It must not own daemon lifecycle, use
+   PyO3, or automatically execute a local fallback when the daemon is absent.
+   Any direct local execution for a pure function requires a separate approved
+   product contract and is not a general fallback.
+4. All entrypoints use `asc-daemon-core`. The server constructs trusted
+   principals from peer credentials and authenticated bindings; caller-supplied
+   UID, role, or scope is attribution only. Query scope is server-generated,
+   and CLI/TUI must not bypass authorization by reading SQLite directly.
+5. `asc-daemon` is the process and composition root. Reusable application logic
+   belongs in Action Runtime and Policy Runtime, not in transport handlers or
+   the binary bootstrap layer.
+6. Do not use `SecurityBackend` as a universal abstraction. Use the bounded V2
+   roles `CapabilityExecutor`, `ContextProvider`, `EnforcementAdapter`, and
+   `Repository`/`Client`/`Sink`. Security capabilities do not depend on the
+   Policy Compiler; they exchange stable Evidence/AttributeBundle contracts.
+7. Migrate by contract-first crate work packages with rolling source baselines
+   and direct-dependency revisions. Each crate can start after its own
+   Definition Review and is accepted with its direct consumers plus the
+   relevant integration slice. Do not require backend-first/daemon-last or a
+   single global decision freeze.
+8. Reuse the V1 contracts as per-crate discovery and differential fixtures.
+   Supported CLI/RPC/schema/config/state behavior must remain compatible or use
+   an approved, versioned transition. The current 9 daemon methods are V1 fact;
+   proposed action methods must be classified in the daemon protocol task and
+   must not be presented as already implemented.
+9. Expose daemon security actions through explicit allowlisted protocol
+   handlers. Each method maps to one Action Runtime operation; do not add a
+   generic endpoint that accepts an arbitrary action name. Retain the three
+   response layers where the V1 compatibility interface is supported:
+   transport failure, daemon failure (`ok=false`), and action result (`ok=true`,
+   including failed action results).
+10. Treat the current opaque `trace_id` as V1 compatibility behavior only.
+    The V2 target uses OpenTelemetry as the sole authority for TraceId, SpanId,
+    parentage, and `traceparent/tracestate` propagation. AgentSec owns only
+    Agent/security span semantics and bounded attributes; do not add a second
+    custom trace ID or map arbitrary V1 values into OTel TraceId. SecurityEvent
+    persistence remains independent of sampling, exporters, and collectors.
+11. Each crate task must record its V1 relationship and acceptance type, run
+    shared V1/V2 fixtures when applicable, and provide a pass/fail matrix,
+    external compatibility report, internal contract change record, direct
+    consumer evidence, and rollback procedure. Markdown-only acceptance IDs do
+    not complete a gate.
+
 ---
 
 ## raw packaging
