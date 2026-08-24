@@ -29,6 +29,9 @@ from agent_sec_cli.skill_ledger.scanner.builtins.cisco_static.scanner import (
     SCANNER_NAME as CISCO_STATIC_SCANNER_NAME,
 )
 from agent_sec_cli.skill_ledger.scanner.builtins.cisco_static.scanner import (
+    SCANNER_VERSION as CISCO_STATIC_SCANNER_VERSION,
+)
+from agent_sec_cli.skill_ledger.scanner.builtins.cisco_static.scanner import (
     _level_from_severity,
 )
 from agent_sec_cli.skill_ledger.scanner.builtins.cisco_static.scanner import (
@@ -775,6 +778,8 @@ class TestCiscoStaticScanner(unittest.TestCase):
             )
             result = run_builtin_scanner(CISCO_STATIC_SCANNER_NAME, skill)
             self.assertEqual(result.scanner, CISCO_STATIC_SCANNER_NAME)
+            self.assertEqual(result.version, CISCO_STATIC_SCANNER_VERSION)
+            self.assertEqual(result.version, "cisco-static-only-0.1.1")
             self.assertEqual(result.findings, [])
 
     def test_skipped_dirs_are_not_scanned(self):
