@@ -12,7 +12,7 @@ use agentsight_opt_store::{Dimension, OptimizationStore};
 use agentsight_trajectory_collector::TrajectoryStore;
 use serde::{Deserialize, Serialize};
 
-use crate::server::semantic_search;
+use crate::semantic_search;
 
 const CONFIG_FILE_NAME: &str = "optimization_config.json";
 const DB_FILE_NAME: &str = "optimization.db";

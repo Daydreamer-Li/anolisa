@@ -12,7 +12,6 @@ mod handlers;
 pub mod optimize;
 mod preferences;
 mod secret;
-pub mod semantic_search;
 mod system_audit;
 mod token_savings;
 

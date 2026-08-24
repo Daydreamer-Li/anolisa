@@ -32,6 +32,9 @@ mod logging;
 pub mod preferences;
 mod private_sqlite;
 pub mod security;
+// Cross-platform: the request/response contract and LLM ranking call behind
+// `POST /api/sessions/search`, shared by the Linux and macOS server handlers.
+pub mod semantic_search;
 pub mod tokenizer;
 pub mod utils;
 

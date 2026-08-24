@@ -32,6 +32,7 @@ LAYER_MAP = {
     "server":      7,   # L7: Serve
     "health":      7,   # L7: Serve
     "preferences": 7,   # L7: Serve (on-demand analysis shared by both servers)
+    "semantic_search": 7,  # L7: Serve (session search contract shared by both servers)
     "bin":         8,   # L8: Entry
     "unified":     8,   # L8: Entry
     "config":      8,   # L8: Entry
@@ -61,10 +62,12 @@ ALLOWED_DEPS = {
         "enforcement",
         "security",
         "preferences",
+        "semantic_search",
     },
-    # Same-layer peer of `server`: a transport-agnostic contract the Linux and
-    # macOS handlers share, so it may only read downwards.
+    # Same-layer peers of `server`: both are transport-agnostic contracts the
+    # Linux and macOS handlers share, so they may only read downwards.
     "preferences": {"genai", "storage", "atif"},
+    "semantic_search": {"storage"},
     "agent_sec":   set(),
     "health":      {"storage"},
     "unified":     "*",
