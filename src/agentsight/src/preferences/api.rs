@@ -95,6 +95,26 @@ pub struct PreferencesQuery {
     pub source: Option<String>,
 }
 
+/// Query string accepted by the turns endpoint (`/api/preferences/turns`).
+///
+/// Mirrors [`PreferencesQuery`] for `window_days`/`source` but drops `llm`
+/// (the turns endpoint serves raw text for the caller to reason over) and
+/// adds `limit` to bound how many deduped user turns are returned.
+#[derive(Debug, Deserialize)]
+pub struct TurnsQuery {
+    pub window_days: Option<u32>,
+    pub source: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// Default number of user turns returned when `limit` is omitted. Capped so a
+/// single response stays manageable for an agent to reason over in one pass.
+pub const DEFAULT_TURNS_LIMIT: usize = 200;
+
+/// Hard maximum for `limit` — a misbehaving caller must not be able to pull an
+/// unbounded blob of raw conversation text out of the API.
+pub const MAX_TURNS_LIMIT: usize = 1000;
+
 /// Clamp the requested window into `1..=MAX_WINDOW_DAYS`, defaulting to
 /// [`DEFAULT_WINDOW_DAYS`].
 pub fn clamp_window_days(requested: Option<u32>) -> u32 {

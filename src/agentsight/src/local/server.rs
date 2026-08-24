@@ -441,6 +441,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             // User preference analysis API (registered before api_fallback)
             .service(preferences::export_preferences)
             .service(preferences::get_preferences)
+            .service(preferences::get_preference_turns)
             .service(export_atif_unavailable)
             // Catch-all for unregistered API endpoints (returns empty array)
             .service(api_fallback)

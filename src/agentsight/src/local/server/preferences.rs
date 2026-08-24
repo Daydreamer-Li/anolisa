@@ -6,14 +6,17 @@
 //! macOS, so `source=genai` fails loudly and `source=auto` degrades
 //! straight to `trajectories.db`.
 
+use std::collections::HashSet;
+
 use actix_web::{HttpResponse, Responder, get, web};
 use agentsight_opt::preference::{LlmPreference, analyze_user_turns};
 use agentsight_trajectory_collector::TrajectoryStore;
 
 use super::optimize::OptimizeAppState;
 use crate::preferences::api::{
-    AutoResolution, PreferenceSourceParam, PreferencesQuery, cache_get, cache_put,
-    clamp_window_days, merge_llm_preferences, render_markdown, resolve_auto, window_start_ns,
+    AutoResolution, DEFAULT_TURNS_LIMIT, MAX_TURNS_LIMIT, PreferenceSourceParam, PreferencesQuery,
+    TurnsQuery, cache_get, cache_put, clamp_window_days, merge_llm_preferences, render_markdown,
+    resolve_auto, window_start_ns,
 };
 use crate::preferences::{aggregator, analyze_rows, detector, trajectory_source};
 
@@ -75,8 +78,8 @@ fn load_rows(
 }
 
 /// Parse `?source=`, mapping bad values to a 400 with the parser's message.
-fn parse_source(query: &PreferencesQuery) -> Result<PreferenceSourceParam, HttpResponse> {
-    PreferenceSourceParam::parse(query.source.as_deref()).map_err(|message| {
+fn parse_source(source: Option<&str>) -> Result<PreferenceSourceParam, HttpResponse> {
+    PreferenceSourceParam::parse(source).map_err(|message| {
         HttpResponse::BadRequest().json(serde_json::json!({
             "error": "invalid source",
             "message": message,
@@ -97,7 +100,7 @@ pub async fn get_preferences(
     data: web::Data<OptimizeAppState>,
     query: web::Query<PreferencesQuery>,
 ) -> impl Responder {
-    let source = match parse_source(&query) {
+    let source = match parse_source(query.source.as_deref()) {
         Ok(source) => source,
         Err(resp) => return resp,
     };
@@ -166,7 +169,7 @@ pub async fn export_preferences(
     data: web::Data<OptimizeAppState>,
     query: web::Query<PreferencesQuery>,
 ) -> impl Responder {
-    let source = match parse_source(&query) {
+    let source = match parse_source(query.source.as_deref()) {
         Ok(source) => source,
         Err(resp) => return resp,
     };
@@ -179,4 +182,46 @@ pub async fn export_preferences(
     HttpResponse::Ok()
         .content_type("text/markdown; charset=utf-8")
         .body(render_markdown(&prefs))
+}
+
+/// GET /api/preferences/turns?window_days=7&source=auto&limit=200
+///
+/// Returns the deduped raw user turns inside the window — the same text the
+/// `llm=true` path feeds to the server-side LLM, but handed back verbatim so
+/// an agent (which already has its own model) can run the enhancement itself
+/// without agentsight holding any LLM credentials. Newest unique turns first;
+/// `limit` bounds the count (default 200, max 1000).
+#[get("/api/preferences/turns")]
+pub async fn get_preference_turns(
+    data: web::Data<OptimizeAppState>,
+    query: web::Query<TurnsQuery>,
+) -> impl Responder {
+    let source = match parse_source(query.source.as_deref()) {
+        Ok(source) => source,
+        Err(resp) => return resp,
+    };
+    let window_days = clamp_window_days(query.window_days);
+    let (rows, resolved) = match load_rows(&data, source, window_days) {
+        Ok(loaded) => loaded,
+        Err(resp) => return resp,
+    };
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_TURNS_LIMIT)
+        .clamp(1, MAX_TURNS_LIMIT);
+    let mut seen: HashSet<String> = HashSet::new();
+    let turns: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.user_text.clone())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| seen.insert(s.clone()))
+        .take(limit)
+        .collect();
+    HttpResponse::Ok().json(serde_json::json!({
+        "window_days": window_days,
+        "source": resolved.as_str(),
+        "turns_count": turns.len(),
+        "turns": turns,
+    }))
 }

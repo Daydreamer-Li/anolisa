@@ -292,6 +292,7 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // User preference analysis API routes (export before the shorter path)
                 .service(preferences::export_preferences)
                 .service(preferences::get_preferences)
+                .service(preferences::get_preference_turns)
                 // Causal attribution API routes
                 .service(causal::run_causal_attribution)
                 // Trajectory collection API routes (filters before the dynamic segment)
@@ -543,6 +544,11 @@ const API_ROUTES: &[(&str, &str, &str)] = &[
         "GET",
         "/api/preferences/export",
         "User preferences as Markdown",
+    ),
+    (
+        "GET",
+        "/api/preferences/turns",
+        "Raw user turns for agent-side LLM reasoning",
     ),
     ("POST", "/api/causal-attribution", "Run causal attribution"),
     ("GET", "/api/trajectories", "List collected trajectories"),
