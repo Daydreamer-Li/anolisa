@@ -323,9 +323,14 @@ requirement.
 
 A change to a supported method, action, field, default, error, lifecycle event,
 redaction rule, state format, or side effect must update the relevant contract
-and executable V1/V2 conformance fixtures in the same change. Compatibility can
-be supplied by a Rust binary, protocol adapter, state migrator, or versioned
-interface; it does not require retaining Python in the V2 runtime.
+and executable conformance fixtures in the same change. During migration,
+capture supported V1 behavior with an executable V1 oracle or frozen golden
+fixtures, and require the corresponding V2 work package to pass those fixtures
+before completion. After an approved versioned transition retires V1 support,
+maintain only the current V2 contract and conformance fixtures; retaining or
+running the V1 implementation is not required. Compatibility can be supplied by
+a Rust binary, protocol adapter, state migrator, or versioned interface; it does
+not require retaining Python in the V2 runtime.
 
 Daemon Job changes must update `DAEMON_JOB_CONTRACT_zh.md` and its `DJOB-*`
 fixtures. Keep long-lived service health separate from the most recent run
@@ -387,11 +392,11 @@ healthcheck files that are absent from main as CURRENT/PRESERVE evidence.
     Agent/security span semantics and bounded attributes; do not add a second
     custom trace ID or map arbitrary V1 values into OTel TraceId. SecurityEvent
     persistence remains independent of sampling, exporters, and collectors.
-11. Each crate task must record its V1 relationship and acceptance type, run
-    shared V1/V2 fixtures when applicable, and provide a pass/fail matrix,
-    external compatibility report, internal contract change record, direct
-    consumer evidence, and rollback procedure. Markdown-only acceptance IDs do
-    not complete a gate.
+11. Each crate task must record its V1 relationship and acceptance type, run the
+    applicable migration or current-version conformance fixtures, and provide a
+    pass/fail matrix, external compatibility report, internal contract change
+    record, direct consumer evidence, and rollback procedure. Markdown-only
+    acceptance IDs do not complete a gate.
 
 ---
 
