@@ -43,6 +43,7 @@ use. The reference copy shipped with the source is `src/agentsight/agentsight.js
   "runtime_limits": {
     "event_channel_capacity": 10000,
     "event_channel_policy": "backpressure",
+    "event_channel_max_bytes_mb": 64,
     "pending_genai_max_count": 1000,
     "pending_genai_max_bytes_mb": 64,
     "pid_cache_size": 1024,
@@ -106,6 +107,7 @@ memory-constrained ones. `MemoryMax=350M` in the packaged systemd unit assumes r
 |---|---|---|
 | `event_channel_capacity` | `10000` | Bounded probe → pipeline channel |
 | `event_channel_policy` | `backpressure` | Behaviour when the channel is full: `backpressure`, `drop_newest`, `sample` |
+| `event_channel_max_bytes_mb` | `64` | Byte budget for events queued in that channel; `0` disables it. Enforced alongside the slot count, because one captured SSL record can be up to 4 MiB — 10 000 slots alone do not bound memory. Events arriving over budget are dropped and counted in the log |
 | `pending_genai_max_count` | `1000` | Events waiting for a session ID |
 | `pending_genai_max_bytes_mb` | `64` | Byte cap for the same queue |
 | `pid_cache_size` | `1024` | PID → Agent name LRU entries |

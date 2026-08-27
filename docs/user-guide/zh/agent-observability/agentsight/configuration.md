@@ -42,6 +42,7 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
   "runtime_limits": {
     "event_channel_capacity": 10000,
     "event_channel_policy": "backpressure",
+    "event_channel_max_bytes_mb": 64,
     "pending_genai_max_count": 1000,
     "pending_genai_max_bytes_mb": 64,
     "pid_cache_size": 1024,
@@ -104,6 +105,7 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
 |---|---|---|
 | `event_channel_capacity` | `10000` | 探针到流水线的有界通道容量 |
 | `event_channel_policy` | `backpressure` | 通道满时的策略：`backpressure`、`drop_newest`、`sample` |
+| `event_channel_max_bytes_mb` | `64` | 该通道中排队事件的字节预算，`0` 表示不限制。与容量同时生效：单条 SSL 记录最大可达 4 MiB，仅靠 10000 个槽位无法限定内存。超出预算的事件会被丢弃并计入日志 |
 | `pending_genai_max_count` | `1000` | 等待 session ID 的事件条数上限 |
 | `pending_genai_max_bytes_mb` | `64` | 同一队列的字节上限 |
 | `pid_cache_size` | `1024` | PID → Agent 名称的 LRU 条目数 |
