@@ -33,7 +33,11 @@ sudo systemctl enable --now agentsight.service
 
 安装包 unit 自带的保障：
 
-- `Restart=on-failure`、`RestartSec=10`，每天最多重启 10 次；
+- `Restart=always`、`RestartSec=10`，且不限制启动次数，因此反复崩溃或被 OOM 杀掉都不会让主机永久失去观测。
+  代价是显式的：完全起不来的服务会每 10 秒重试一次并在 journal 里持续报错，而不是静默消失；
+- `OOMPolicy=continue`，单个工作进程被 OOM 杀掉不会拖垮整个 unit —— 守护脚本会停掉另一个工作进程并退出，
+  再由 `Restart=always` 把两者拉起。该指令需要 systemd 243+；更老的版本（Anolis 8 / systemd 239）会打一条
+  unknown-key 警告并忽略它，退回到停掉 unit 的默认行为，而这种情况 `Restart=always` 同样能恢复；
 - `CPUQuota=30%`、`MemoryMax=350M`，按默认 `runtime_limits` 估算；
 - `UMask=0077`，`/var/log/sysak/.agentsight` 下的数据仅 root 可读；
 - `systemctl reload` 发送 `SIGHUP`，守护脚本会重启两个工作进程以重新读取 `config.json`，无需整体重启。

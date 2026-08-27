@@ -34,7 +34,13 @@ Two units are installed:
 
 What the packaged unit gives you:
 
-- `Restart=on-failure` with `RestartSec=10`, capped at 10 restarts per day;
+- `Restart=always` with `RestartSec=10` and no start rate limit, so a repeated crash or OOM kill can
+  never leave the host permanently unobserved. The trade-off is visible: a service that cannot start
+  at all keeps retrying every 10 s and says so in the journal, rather than going quiet;
+- `OOMPolicy=continue`, so one OOM-killed worker does not tear down the whole unit — the supervisor
+  stops its sibling and exits, and `Restart=always` brings both back. Requires systemd 243+; older
+  releases (Anolis 8 / systemd 239) log an unknown-key warning, ignore the directive and fall back to
+  stopping the unit, which `Restart=always` still recovers from;
 - `CPUQuota=30%` and `MemoryMax=350M`, sized for the default `runtime_limits`;
 - `UMask=0077`, so data under `/var/log/sysak/.agentsight` is root-only;
 - `systemctl reload` sends `SIGHUP`, and the supervisor restarts both workers so they re-read

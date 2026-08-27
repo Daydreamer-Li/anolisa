@@ -115,12 +115,31 @@ sudo du -sh /var/log/sysak/.agentsight
 "runtime_limits": {
   "event_channel_capacity": 5000,
   "event_channel_policy": "drop_newest",
+  "event_channel_max_bytes_mb": 32,
   "pending_genai_max_bytes_mb": 32,
   "max_connection_body_mb": 4
 }
 ```
 
 `drop_newest` 和 `sample` 以牺牲完整性换取内存的硬上限。
+
+`event_channel_max_bytes_mb` 限定的是槽位数管不了的部分：单条 SSL 记录最大可达 4 MiB，所以“通道没满”并不等于
+“内存没满”。设为 `0` 可关闭字节门。当预算开始拒收事件时，服务每分钟记录一条水位日志：
+
+```bash
+sudo journalctl -u agentsight | grep "Buffer watermarks"
+```
+
+`dropped over budget` 计数持续上涨，说明流水线消费跟不上——为了守住 `MemoryMax`，事件被主动丢弃。如果计数
+一直为 0、但 cgroup 内存仍在逼近上限，说明内存占在下游（HTTP 连接缓冲）而不是通道里，应该改为调小
+`max_connection_body_mb`：
+
+```bash
+sudo cat /sys/fs/cgroup/system.slice/agentsight.service/memory.current
+```
+
+服务如果被 OOM 杀掉会自行拉起；安装包 unit 特意关闭了 systemd 的启动频率限制，就是为了避免反复被杀后
+主机陷入永久无观测状态。
 
 ## 中断事件看起来不对
 

@@ -126,12 +126,33 @@ The packaged unit caps the service at `CPUQuota=30%` and `MemoryMax=350M`, which
 "runtime_limits": {
   "event_channel_capacity": 5000,
   "event_channel_policy": "drop_newest",
+  "event_channel_max_bytes_mb": 32,
   "pending_genai_max_bytes_mb": 32,
   "max_connection_body_mb": 4
 }
 ```
 
 `drop_newest` and `sample` trade completeness for a hard bound on memory.
+
+`event_channel_max_bytes_mb` bounds what the slot count cannot: one captured SSL record can be up to
+4 MiB, so a full channel is not the same as a full buffer. Set it to `0` to disable the byte gate.
+When the budget rejects events, the service logs a watermark line once a minute:
+
+```bash
+sudo journalctl -u agentsight | grep "Buffer watermarks"
+```
+
+A rising `dropped over budget` count means the pipeline cannot keep up — events are being shed to
+stay inside `MemoryMax`. A count that stays at zero while the cgroup still approaches its cap means
+the memory is held downstream (HTTP connection buffers) rather than in the channel, so lower
+`max_connection_body_mb` instead:
+
+```bash
+sudo cat /sys/fs/cgroup/system.slice/agentsight.service/memory.current
+```
+
+If the service is ever OOM-killed it restarts on its own; the packaged unit disables systemd's start
+rate limit precisely so a repeated kill cannot leave the host permanently unobserved.
 
 ## Interruption events look wrong
 
