@@ -879,6 +879,36 @@ SHELL_DISK_WIPE_CASES = [
         "shell-disk-wipe",
         1,
     ),
+    (
+        "dd if=/dev/zero of=/dev/sda>/tmp/dd.log",
+        "bash",
+        "shell-disk-wipe",
+        1,
+    ),
+    (
+        "dd if=/dev/zero of=/dev/nvme0n1p1>/dev/null 2>&1",
+        "bash",
+        "shell-disk-wipe",
+        1,
+    ),
+    (
+        "dd if=/dev/urandom of=/dev/disk/by-id/xxxx>>/tmp/out",
+        "bash",
+        "shell-disk-wipe",
+        1,
+    ),
+    (
+        "dd if=/dev/zero of='/dev/mapper/vg-root'</tmp/input",
+        "bash",
+        "shell-disk-wipe",
+        1,
+    ),
+    (
+        "dd if=/dev/zero of=/dev/sda> >(cat)",
+        "bash",
+        "shell-disk-wipe",
+        1,
+    ),
     # === TP: wipefs ===
     ("wipefs /dev/sda", "bash", "shell-disk-wipe", 1),
     ("wipefs -a /dev/sda1", "bash", "shell-disk-wipe", 1),
@@ -896,6 +926,30 @@ SHELL_DISK_WIPE_CASES = [
     ("dd if=/dev/zero of=image.raw", "bash", "shell-disk-wipe", 0),
     ("dd if=/dev/sda of=/tmp/backup.raw", "bash", "shell-disk-wipe", 0),
     ("dd if=image.raw of=/dev/null", "bash", "shell-disk-wipe", 0),
+    (
+        'dd if=/dev/zero of="/dev/sda>/tmp/dd.log"',
+        "bash",
+        "shell-disk-wipe",
+        0,
+    ),
+    (
+        "dd if=/dev/zero of=/dev/mapper/>/tmp/dd.log",
+        "bash",
+        "shell-disk-wipe",
+        0,
+    ),
+    (
+        "dd if=image.raw of=/dev/sda<(printf data)",
+        "bash",
+        "shell-disk-wipe",
+        0,
+    ),
+    (
+        "dd if=image.raw of=/dev/sda>(cat)",
+        "bash",
+        "shell-disk-wipe",
+        0,
+    ),
     (
         "dd if=/dev/zero | echo of=/dev/sda",
         "bash",
