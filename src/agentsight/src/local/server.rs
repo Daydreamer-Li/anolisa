@@ -404,9 +404,10 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             .wrap(cors)
             .app_data(local_state.clone())
             .app_data(optimize_data.clone())
-            // Trajectory collection API
+            // Trajectory collection API (static paths before the dynamic segment)
             .service(trajectories::list_trajectories)
             .service(trajectories::trajectory_filters)
+            .service(trajectories::list_trajectory_steps)
             .service(trajectories::get_trajectory_detail)
             // Local session discovery + ATIF conversion API
             .service(local_sessions::list_local_sessions)

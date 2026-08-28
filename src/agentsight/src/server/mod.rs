@@ -294,9 +294,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .service(preferences::get_preference_turns)
                 // Causal attribution API routes
                 .service(causal::run_causal_attribution)
-                // Trajectory collection API routes (filters before the dynamic segment)
+                // Trajectory collection API routes (static paths before the dynamic segment)
                 .service(handlers::list_trajectories)
                 .service(handlers::trajectory_filters)
+                .service(handlers::list_trajectory_steps)
                 .service(handlers::get_trajectory_detail)
                 // API self-documentation
                 .service(web::resource("/docs").route(web::get().to(api_docs)))
@@ -555,6 +556,11 @@ const API_ROUTES: &[(&str, &str, &str)] = &[
         "GET",
         "/api/trajectories/filters",
         "Trajectory filter values",
+    ),
+    (
+        "GET",
+        "/api/trajectories/steps",
+        "Steps by derived category, with surrounding context",
     ),
     ("GET", "/api/trajectories/{session_id}", "Trajectory detail"),
 ];
