@@ -25,6 +25,7 @@ import {
   fetchInterruptionConversationCounts,
   fetchLatestEvaluation,
   fetchTokenSavings,
+  conversationInterruptionKey,
   UNASSIGNED_INTERRUPTION_BUCKET,
   SessionSummary,
   TraceSummary,
@@ -449,11 +450,14 @@ const TraceSubTable: React.FC<TraceSubTableProps> = ({ sessionId, conversationIn
         </tr>
       )}
 
-      {/* Interruptions with no conversation_id. Without this row they would
-          show up in the session badge and then disappear on expand, since the
-          rows below only look up counts by a real trace's conversation_id. */}
+      {/* Interruptions this session owns but that never got a conversation_id.
+          Without this row they would count toward the session badge and then
+          vanish on expand, since the rows below only look up counts by a real
+          trace's conversation_id. */}
       {(() => {
-        const ic = conversationInterruptionCounts.get(UNASSIGNED_INTERRUPTION_BUCKET);
+        const ic = conversationInterruptionCounts.get(
+          conversationInterruptionKey(sessionId, UNASSIGNED_INTERRUPTION_BUCKET)
+        );
         if (!ic || ic.total === 0) return null;
         return (
           <tr className="bg-amber-50 border-t border-amber-100">
@@ -557,7 +561,9 @@ const TraceSubTable: React.FC<TraceSubTableProps> = ({ sessionId, conversationIn
                 </div>
                 <div>
                   {(() => {
-                    const ic = conversationInterruptionCounts.get(tr.conversation_id);
+                    const ic = conversationInterruptionCounts.get(
+                      conversationInterruptionKey(sessionId, tr.conversation_id)
+                    );
                     if (!ic || ic.total === 0) return <span className="text-xs text-gray-300">—</span>;
                     return (
                       <InterruptionBadge
@@ -595,6 +601,7 @@ const TraceSubTable: React.FC<TraceSubTableProps> = ({ sessionId, conversationIn
               <td colSpan={10} className="px-4 lg:px-8 pb-3 pt-0">
                 <div className="border border-gray-200 rounded-lg overflow-hidden">
                   <InterruptionPanel
+                    sessionId={sessionId}
                     conversationId={tr.conversation_id}
                     onClose={() => setExpandedTracePanel(null)}
                     onResolvedEvent={onResolvedEvent}
@@ -976,7 +983,10 @@ export const ConversationList: React.FC<ConversationListProps> = () => {
     // 3. Update conversation-level badge counts. A null id belongs to the
     //    unassigned bucket, which is a real row in the breakdown.
     {
-      const convKey = info.conversation_id ?? UNASSIGNED_INTERRUPTION_BUCKET;
+      const convKey = conversationInterruptionKey(
+        info.session_id ?? UNASSIGNED_INTERRUPTION_BUCKET,
+        info.conversation_id ?? UNASSIGNED_INTERRUPTION_BUCKET
+      );
       setConversationInterruptionCounts(prev => {
         const existing = prev.get(convKey);
         if (!existing) return prev;
@@ -1071,7 +1081,9 @@ export const ConversationList: React.FC<ConversationListProps> = () => {
     setInterruptionCount(intData);
     setInterruptionStats(iStats);
     setSessionInterruptionCounts(new Map(iSessionCounts.map((c) => [c.session_id, c])));
-    setConversationInterruptionCounts(new Map(iConvCounts.map((c) => [c.conversation_id, c])));
+    setConversationInterruptionCounts(new Map(
+      iConvCounts.map((c) => [conversationInterruptionKey(c.session_id, c.conversation_id), c])
+    ));
     setSavingsMap(new Map(
       savingsResp?.sessions.map((s) => [s.session_id, s.compounded_saved ?? s.saved_tokens]) ?? []
     ));
