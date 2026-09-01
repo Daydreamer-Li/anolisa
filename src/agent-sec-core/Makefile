@@ -33,21 +33,24 @@ python-lint-ci: ## Run incremental ruff lint check (only changed lines vs main, 
 PYO3_PIN = PY="$$(uv python find 2>/dev/null)"; if [ -n "$$PY" ]; then export PYO3_PYTHON="$$PY"; fi
 
 .PHONY: rust-code-pretty
-rust-code-pretty: ## Format Rust code with cargo fmt (agent-sec-cli + linux-sandbox)
+rust-code-pretty: ## Format Rust code with cargo fmt (agent-sec-cli + V2 + linux-sandbox)
 	@echo "🎨 Formatting Rust code with cargo fmt..."
 	cd agent-sec-cli && cargo fmt --all
+	cd v2 && cargo fmt --all
 	cd linux-sandbox && cargo fmt
 
 .PHONY: rust-fmt-check
 rust-fmt-check: ## Check Rust formatting without modifying files
 	@echo "🔍 Checking Rust formatting..."
 	cd agent-sec-cli && cargo fmt --all -- --check
+	cd v2 && cargo fmt --all -- --check
 	cd linux-sandbox && cargo fmt -- --check
 
 .PHONY: rust-lint
 rust-lint: ## Run cargo clippy on Rust crates (linux-sandbox on Linux only)
 	@echo "🔍 Running cargo clippy..."
 	cd agent-sec-cli && { $(PYO3_PIN); cargo clippy --workspace --all-targets -- -D warnings; }
+	cd v2 && cargo clippy --workspace --all-targets --locked -- -D warnings
 	@if [ "$$(uname -s)" = "Linux" ]; then \
 		cd linux-sandbox && cargo clippy --all-targets -- -D warnings; \
 	else \
@@ -114,9 +117,11 @@ test-python-coverage: ## Run Python tests with coverage report
 		-v --cov --cov-config=agent-sec-cli/pyproject.toml --cov-report=xml --cov-report=term-missing
 
 .PHONY: test-rust
-test-rust: ## Run Rust tests (agent-sec-cli workspace always; linux-sandbox on Linux only)
+test-rust: ## Run Rust tests (agent-sec-cli + V2; linux-sandbox on Linux only)
 	@echo "🧪 Running agent-sec-cli workspace Rust tests..."
 	cd agent-sec-cli && { $(PYO3_PIN); cargo test --workspace; }
+	@echo "🧪 Running AgentSecCore V2 workspace Rust tests..."
+	cd v2 && cargo test --workspace --locked
 	@echo "🧪 Running linux-sandbox Rust tests (Linux only)..."
 	@if [ "$$(uname -s)" = "Linux" ]; then \
 		cd linux-sandbox && cargo test -- --skip bwrap_seccomp; \

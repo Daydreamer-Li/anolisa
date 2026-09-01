@@ -482,6 +482,11 @@ jobs:
           # step below skips them; run the crate's public examples here instead.
           cd agent-sec-cli && cargo test --doc -p prompt-scanner
 
+      - name: Run AgentSecCore V2 Rust tests
+        run: |
+          cd src/agent-sec-core/v2
+          cargo test --workspace --locked
+
       - name: Run Rust tests with coverage
         run: |
           cd src/agent-sec-core
