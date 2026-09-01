@@ -530,6 +530,12 @@ fn validate_cidr(cidr: &str) -> Result<(), ValidationError> {
     let prefix = prefix
         .parse::<u8>()
         .map_err(|_| ValidationError::new("cidr", "invalid prefix length"))?;
+    if cidr != format!("{address}/{prefix}") {
+        return Err(ValidationError::new(
+            "cidr",
+            "CIDR must use canonical address and prefix spelling",
+        ));
+    }
     let canonical = match address {
         IpAddr::V4(address) if prefix <= 32 => {
             let mask = if prefix == 0 {
