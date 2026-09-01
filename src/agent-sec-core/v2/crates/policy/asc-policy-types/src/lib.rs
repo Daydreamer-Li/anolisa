@@ -6,12 +6,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authoring;
+pub mod binding;
 pub mod error;
 pub mod identifiers;
 pub mod ir;
 pub mod policy;
 pub mod profile;
 pub mod resource;
+pub mod scope;
 pub mod target;
 
 pub use error::{Validate, ValidationError};

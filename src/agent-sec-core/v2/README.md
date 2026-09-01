@@ -8,7 +8,8 @@ or target Adapter.
 The current crates are:
 
 - `asc-foundation-types`: bounded transport-independent identifiers and revisions.
-- `asc-policy-types`: backend-independent Policy IR and target Adapter contracts.
+- `asc-policy-types`: authored Policy, prepared Policy/Scope/Binding,
+  backend-independent IR, and target Adapter contracts.
 
 Daemon protocol, client, process, persistence, and Policy runtime crates belong
 to later work packages and are intentionally absent from this foundation slice.
