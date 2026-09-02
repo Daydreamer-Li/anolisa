@@ -104,6 +104,5 @@
       }
     },
     "templateDigest": "sha256:3b92f8f65b2b55b387f3e527cf28c881906f3c2f63c41c9faa60469ad3947957"
-  },
-  "desiredState": "READY"
+  }
 }
