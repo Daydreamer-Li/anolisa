@@ -215,6 +215,35 @@ operator-visible semantics 必须进入 compatibility/change record。journald �
 7. 安装、升级和不可逆 migration 由 packaging/deploy/state-migrator 所有；
 8. 不把未进入 main 的 helper、probe 或本地 chart 当作 V1 事实。
 
+### 8.1 **[TARGET V2][PARTIAL]** 当前 Rust transport bring-up
+
+`v2/apps/asc-daemon` 当前提供可执行的前台 Rust binary 和 composition bootstrap。它接受
+无子命令或显式 `serve` 两种形式，要求通过 `--socket` 提供绝对路径，安装 SIGTERM/SIGINT
+cooperative shutdown，并消费 SIGHUP 而不 reload。bootstrap 使用
+`asc-daemon-service` 完成真实 UDS bind、bounded admission、单请求 frame 读取、drain 和同
+inode socket cleanup。
+
+transport 对 frame read、application dispatch、transport rejection encode、response
+write 和 drain 分别设置显式 deadline。dispatch deadline 到期会释放 connection admission
+并向 handler 发出 cooperative cancellation，但 Rust 不能强制终止已经运行且忽略取消信号的
+blocking call。`asc-daemon` 因此显式拥有 Tokio runtime，并在 service drain 后使用额外的
+runtime shutdown timeout，避免残留 `spawn_blocking` 让前台进程永久不能退出。
+
+该 slice 尚未注册 daemon protocol 或 `daemon.health`，因此完整 request 在经过唯一的
+`RequestDispatcher` 注入点后静默关闭。此行为只用于证明 process/transport 能启动，不是
+稳定 wire contract，也不表示 application READY。后续 protocol 合并时，由同一个 concrete
+dispatcher 完成 envelope decode、request ID、trusted Principal 绑定、method allowlist 和
+response encode；PAP 只是其中一组显式注册的方法，不增加第二个 service dispatch 层。
+Busy、timeout、shutdown 等 transport failure 由独立且有短 deadline 的
+`RejectionEncoder` 投影，正常依赖图不包含 PAP、Repository 或 Compiler。
+framework 不能证明具体 PAP/Repository 内部没有全局 mutex、长 transaction 或其它共享阻塞
+点；该项必须由 PAP direct-consumer concurrency fixture 在集成时验收。
+
+当前还未实现 packaging-owned system socket 默认值、runtime directory hardening、Host
+singleton/stale-socket 判定、日志/OTel 和 health readiness。因此这一 slice 只提供
+DPROC-002/DPROC-003 的 focused source-level evidence，不能宣称 DPROC-012 至 DPROC-014 或
+production process gate 已完成。
+
 ## 9. 验收矩阵
 
 ### 9.1 **[CURRENT]** V1 oracle

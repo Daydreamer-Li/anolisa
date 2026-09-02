@@ -1,6 +1,6 @@
 use tokio::sync::watch;
 
-/// Cloneable cooperative shutdown signal owned by the future process bootstrap.
+/// Cloneable cooperative shutdown signal owned by the process bootstrap.
 #[derive(Debug, Clone)]
 pub struct ShutdownToken {
     sender: watch::Sender<bool>,
