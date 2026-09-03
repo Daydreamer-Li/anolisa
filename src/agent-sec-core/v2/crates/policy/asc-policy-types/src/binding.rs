@@ -10,7 +10,9 @@ use crate::scope::PreparedScope;
 /// Complete Adapter-independent immutable Binding specification.
 ///
 /// Lifecycle and reconciliation state do not belong to this value. The pair
-/// `(binding_id, binding_revision)` identifies exactly one immutable spec.
+/// `(binding_id, binding_revision)` identifies exactly one immutable snapshot.
+/// Repositories retain only the current snapshot; a higher revision replaces
+/// the previous current record without reusing its number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreparedBinding {
@@ -74,12 +76,13 @@ impl Validate for PreparedBinding {
 /// Request transitions:
 ///
 /// - An identical-spec UPDATE is a no-op from `PendingApply`, `Applying`, or
-///   `Ready`. From `ApplyFailed` or any Delete-side state it transitions to
-///   `PendingApply`.
-/// - A DELETE is a no-op from `PendingDelete`, `Deleting`, or `Deleted`. From
-///   any Apply-side state or `DeleteFailed` it transitions to `PendingDelete`.
-/// - A changed-spec UPDATE is handled by PAP: it allocates the next immutable
-///   Binding revision and assigns that new spec `PendingApply`.
+///   `Ready`. A new Apply intent from another state allocates the next Binding
+///   revision and starts in `PendingApply`, except that `Deleting` rejects it.
+/// - A DELETE is a no-op from `PendingDelete`, `Deleting`, or `Deleted`. A new
+///   Delete intent allocates the next Binding revision and starts in
+///   `PendingDelete`, except that `Applying` rejects it.
+/// - A changed-spec UPDATE allocates the next Binding revision and starts in
+///   `PendingApply`; it is rejected while Apply or Delete is running.
 ///
 /// Reconciler transitions:
 ///
@@ -123,31 +126,42 @@ impl BindingStatus {
         )
     }
 
+    /// Reports whether target-side reconciliation may currently be running.
+    #[must_use]
+    pub const fn is_reconciling(self) -> bool {
+        matches!(self, Self::Applying | Self::Deleting)
+    }
+
     /// Returns the status produced by an identical-spec UPDATE.
     ///
-    /// An identical UPDATE is a no-op while Apply is pending, running, or already
-    /// successful. It returns to pending Apply after deletion or terminal Apply
-    /// failure. Changed spec content is handled separately by PAP revision
-    /// allocation and also starts in `PendingApply`.
-    #[must_use]
-    pub const fn request_apply(self) -> Self {
-        if matches!(self, Self::PendingApply | Self::Applying | Self::Ready) {
-            self
-        } else {
-            Self::PendingApply
+    /// An identical UPDATE is a no-op while Apply is pending, running, or
+    /// already successful. A new Apply intent otherwise starts in
+    /// `PendingApply` under a new revision. Delete work already in progress
+    /// cannot be interrupted.
+    ///
+    /// # Errors
+    /// Rejects a request while Delete reconciliation is running.
+    pub fn request_apply(self) -> Result<Self, ValidationError> {
+        match self {
+            Self::PendingApply | Self::Applying | Self::Ready => Ok(self),
+            Self::Deleting => Err(illegal_status("request Apply", self)),
+            _ => Ok(Self::PendingApply),
         }
     }
 
     /// Returns the status produced by a DELETE request.
     ///
-    /// DELETE is idempotent while deletion is pending, running, or completed;
-    /// retrying a terminal Delete failure returns to pending Delete.
-    #[must_use]
-    pub const fn request_delete(self) -> Self {
-        if matches!(self, Self::PendingDelete | Self::Deleting | Self::Deleted) {
-            self
-        } else {
-            Self::PendingDelete
+    /// DELETE is idempotent while deletion is pending, running, or completed.
+    /// A new Delete intent otherwise starts in `PendingDelete` under a new
+    /// revision. Apply work already in progress cannot be interrupted.
+    ///
+    /// # Errors
+    /// Rejects a request while Apply reconciliation is running.
+    pub fn request_delete(self) -> Result<Self, ValidationError> {
+        match self {
+            Self::PendingDelete | Self::Deleting | Self::Deleted => Ok(self),
+            Self::Applying => Err(illegal_status("request Delete", self)),
+            _ => Ok(Self::PendingDelete),
         }
     }
 
@@ -202,7 +216,8 @@ impl BindingStatus {
     /// Validates a Repository compare-and-swap successor.
     ///
     /// Identical values are accepted for idempotency. Other successors must be
-    /// one of the request or worker transitions exposed by this type.
+    /// one of the worker transitions within the same Binding revision. User
+    /// requests allocate a new revision and replace the current Binding record.
     ///
     /// # Errors
     /// Rejects an illegal status transition.
@@ -212,22 +227,16 @@ impl BindingStatus {
         }
         let valid = matches!(
             (self, next),
-            (Self::PendingApply, Self::Applying | Self::PendingDelete)
+            (Self::PendingApply, Self::Applying)
                 | (
                     Self::Applying,
-                    Self::Ready | Self::PendingApply | Self::ApplyFailed | Self::PendingDelete,
+                    Self::Ready | Self::PendingApply | Self::ApplyFailed,
                 )
-                | (Self::Ready, Self::PendingDelete)
-                | (
-                    Self::ApplyFailed | Self::DeleteFailed,
-                    Self::PendingApply | Self::PendingDelete,
-                )
-                | (Self::PendingDelete, Self::Deleting | Self::PendingApply)
+                | (Self::PendingDelete, Self::Deleting)
                 | (
                     Self::Deleting,
-                    Self::Deleted | Self::PendingDelete | Self::DeleteFailed | Self::PendingApply,
+                    Self::Deleted | Self::PendingDelete | Self::DeleteFailed,
                 )
-                | (Self::Deleted, Self::PendingApply)
         );
         if valid {
             Ok(())
@@ -241,10 +250,11 @@ fn illegal_status(operation: &str, status: BindingStatus) -> ValidationError {
     ValidationError::new("status", format!("cannot {operation} from {status:?}"))
 }
 
-/// Read-only aggregate of an immutable spec and its current lifecycle status.
+/// Current Binding snapshot and its lifecycle status.
 ///
-/// Repositories may construct this view for GET/LIST responses. It must not be
-/// updated as one opaque persistence document.
+/// Repositories construct this value for GET/LIST and atomically replace the
+/// complete value for a new desired-state revision. Reconciler status-only
+/// transitions do not rewrite `spec`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingView {

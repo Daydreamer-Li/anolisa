@@ -1,10 +1,10 @@
 use asc_foundation_types::{ResourceId, Revision};
-use asc_policy_types::binding::{BindingStatus, BindingView, PreparedBinding};
+use asc_policy_types::binding::{BindingStatus, BindingView};
 use asc_policy_types::policy::PreparedPolicy;
 use asc_policy_types::scope::PreparedScope;
 
 use crate::error::PapError;
-use crate::model::{BindingRevisionState, Page, PolicyRevisionState, ScopeRevisionState};
+use crate::model::{Page, PolicyRevisionState, ScopeRevisionState};
 
 /// Persistence port owned by PAP.
 ///
@@ -22,16 +22,20 @@ use crate::model::{BindingRevisionState, Page, PolicyRevisionState, ScopeRevisio
 /// `Page::total` is the matching count before `offset` and `limit` are applied.
 /// These values are per-query inputs and must not be persisted.
 pub trait PapRepository: Send + Sync {
-    /// Inserts one immutable Policy revision or returns the identical revision.
+    /// Creates or replaces the current Policy record.
     ///
-    /// Implementations must reject a revision that is not exactly the next
-    /// never-reused revision for the Policy identity.
+    /// Implementations must atomically accept a changed record only when its
+    /// revision is exactly the next never-reused revision for the Policy identity.
+    /// An exact replay of the current record is idempotent; every other stale,
+    /// reused, or skipped revision must return [`PapError::Conflict`]. A successful
+    /// changed write replaces the previously retained content; only the current
+    /// record remains.
     ///
     /// # Errors
     /// Returns conflict, serialization, or persistence failures.
     fn put_policy(&self, policy: &PreparedPolicy) -> Result<PreparedPolicy, PapError>;
 
-    /// Gets Policy allocation state and the latest retained revision.
+    /// Gets Policy allocation state and its optional current record.
     ///
     /// # Errors
     /// Returns a persistence failure when the query cannot complete.
@@ -40,20 +44,22 @@ pub trait PapRepository: Send + Sync {
         id: &ResourceId,
     ) -> Result<Option<PolicyRevisionState>, PapError>;
 
-    /// Gets one exact Policy revision.
+    /// Gets the current Policy only when its revision equals `revision`.
     ///
     /// # Errors
     /// Returns not-found or persistence failures.
     fn get_policy(&self, id: &ResourceId, revision: Revision) -> Result<PreparedPolicy, PapError>;
 
-    /// Lists retained Policy revisions ordered by Policy identity ascending,
-    /// then numeric revision ascending.
+    /// Lists current Policy records ordered by Policy identity ascending.
     ///
     /// # Errors
     /// Returns a persistence failure when the query cannot complete.
     fn list_policies(&self, limit: u32, offset: u32) -> Result<Page<PreparedPolicy>, PapError>;
 
-    /// Deletes the content of one exact Policy revision without reusing it.
+    /// Deletes the current Policy content when its revision equals `revision`.
+    ///
+    /// Implementations retain the allocation head as a tombstone so a later
+    /// update of the same identity cannot reuse the deleted revision.
     ///
     /// # Errors
     /// Returns not-found, conflict, or persistence failures.
@@ -63,13 +69,20 @@ pub trait PapRepository: Send + Sync {
         revision: Revision,
     ) -> Result<PreparedPolicy, PapError>;
 
-    /// Inserts one immutable Scope revision or returns the identical revision.
+    /// Creates or replaces the current Scope record.
+    ///
+    /// Implementations must atomically accept a changed record only when its
+    /// revision is exactly the next never-reused revision for the Scope identity.
+    /// An exact replay of the current record is idempotent; every other stale,
+    /// reused, or skipped revision must return [`PapError::Conflict`]. A successful
+    /// changed write replaces the previously retained content; only the current
+    /// record remains.
     ///
     /// # Errors
     /// Returns conflict, serialization, or persistence failures.
     fn put_scope(&self, scope: &PreparedScope) -> Result<PreparedScope, PapError>;
 
-    /// Gets Scope allocation state and the latest retained revision.
+    /// Gets Scope allocation state and its optional current record.
     ///
     /// # Errors
     /// Returns a persistence failure when the query cannot complete.
@@ -78,20 +91,22 @@ pub trait PapRepository: Send + Sync {
         id: &ResourceId,
     ) -> Result<Option<ScopeRevisionState>, PapError>;
 
-    /// Gets one exact Scope revision.
+    /// Gets the current Scope only when its revision equals `revision`.
     ///
     /// # Errors
     /// Returns not-found or persistence failures.
     fn get_scope(&self, id: &ResourceId, revision: Revision) -> Result<PreparedScope, PapError>;
 
-    /// Lists retained Scope revisions ordered by Scope identity ascending,
-    /// then numeric revision ascending.
+    /// Lists current Scope records ordered by Scope identity ascending.
     ///
     /// # Errors
     /// Returns a persistence failure when the query cannot complete.
     fn list_scopes(&self, limit: u32, offset: u32) -> Result<Page<PreparedScope>, PapError>;
 
-    /// Deletes the content of one exact Scope revision without reusing it.
+    /// Deletes the current Scope content when its revision equals `revision`.
+    ///
+    /// Implementations retain the allocation head as a tombstone so a later
+    /// update of the same identity cannot reuse the deleted revision.
     ///
     /// # Errors
     /// Returns not-found, conflict, or persistence failures.
@@ -101,12 +116,13 @@ pub trait PapRepository: Send + Sync {
         revision: Revision,
     ) -> Result<PreparedScope, PapError>;
 
-    /// Inserts one immutable Binding spec revision with its initial status.
+    /// Creates or atomically updates the single current Binding record.
     ///
-    /// The spec must use exactly the next never-reused revision for the Binding
-    /// identity. `initial_status` must be `PENDING_APPLY`. Implementations
-    /// persist the spec and current-status transition atomically while keeping
-    /// older specs immutable and retained.
+    /// A new Binding starts at revision 1 in `PENDING_APPLY`. An update must use
+    /// exactly the next never-reused revision and must enter `PENDING_APPLY` or
+    /// `PENDING_DELETE`. The update replaces the complete current spec and
+    /// status atomically; older Binding records are not retained. Implementations
+    /// reject updates while the current status is `APPLYING` or `DELETING`.
     ///
     /// TODO(policy-reconciliation): this method is the transaction boundary
     /// that must later atomically persist a durable reconcile intent and its
@@ -114,23 +130,20 @@ pub trait PapRepository: Send + Sync {
     /// No outbox is written in the PAP-only phase.
     ///
     /// # Errors
-    /// Returns conflict, serialization, or persistence failures.
-    fn put_binding_revision(
-        &self,
-        spec: &PreparedBinding,
-        initial_status: BindingStatus,
-    ) -> Result<BindingView, PapError>;
+    /// Returns operation-in-progress, conflict, serialization, or persistence
+    /// failures.
+    fn update_binding(&self, binding: &BindingView) -> Result<BindingView, PapError>;
 
-    /// Compare-and-swaps status for one exact immutable Binding spec.
+    /// Compare-and-swaps worker status for the current Binding revision.
     ///
     /// Implementations must atomically require the current spec and status to
     /// equal `binding_revision` and `expected_status`, then call
     /// `expected_status.validate_successor(next_status)` or enforce an
     /// equivalent predicate. No `PreparedBinding` is rewritten.
     ///
-    /// TODO(policy-reconciliation): atomically persist a request transition,
-    /// durable reconcile intent, and the ordering/CAS token required to reject
-    /// stale asynchronous results before a worker is introduced.
+    /// Request transitions use [`PapRepository::update_binding`] and allocate a
+    /// new revision; this method only persists Reconciler transitions within one
+    /// current revision.
     ///
     /// # Errors
     /// Returns conflict or persistence failures.
@@ -142,25 +155,6 @@ pub trait PapRepository: Send + Sync {
         next_status: BindingStatus,
     ) -> Result<BindingStatus, PapError>;
 
-    /// Gets the current Binding status and allocation state.
-    ///
-    /// # Errors
-    /// Returns a persistence failure when the query cannot complete.
-    fn get_binding_revision_state(
-        &self,
-        id: &ResourceId,
-    ) -> Result<Option<BindingRevisionState>, PapError>;
-
-    /// Gets one exact immutable Binding spec revision.
-    ///
-    /// # Errors
-    /// Returns not-found or persistence failures.
-    fn get_binding_spec(
-        &self,
-        id: &ResourceId,
-        revision: Revision,
-    ) -> Result<PreparedBinding, PapError>;
-
     /// Gets the current Binding spec and status as a read-only aggregate.
     ///
     /// # Errors
@@ -168,7 +162,7 @@ pub trait PapRepository: Send + Sync {
     fn get_binding(&self, id: &ResourceId) -> Result<BindingView, PapError>;
 
     /// Lists current Binding specs and status ordered by Binding identity
-    /// ascending, then numeric Binding revision ascending.
+    /// ascending.
     ///
     /// # Errors
     /// Returns a persistence failure when the query cannot complete.

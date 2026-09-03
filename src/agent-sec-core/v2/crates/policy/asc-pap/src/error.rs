@@ -24,6 +24,9 @@ pub enum PapError {
     /// An immutable identity or concurrent revision precondition conflicted.
     #[error("immutable revision conflict")]
     Conflict,
+    /// A changed desired-state request cannot interrupt target-side work.
+    #[error("binding reconciliation operation is in progress")]
+    OperationInProgress,
     /// The requested exact record does not exist.
     #[error("record not found")]
     NotFound,

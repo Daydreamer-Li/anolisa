@@ -1,5 +1,4 @@
 use asc_foundation_types::Revision;
-use asc_policy_types::binding::BindingStatus;
 use asc_policy_types::policy::PreparedPolicy;
 use asc_policy_types::scope::PreparedScope;
 use serde::{Deserialize, Serialize};
@@ -9,8 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct PolicyRevisionState {
     /// Highest revision ever allocated, including deleted revisions.
     pub last_allocated_revision: Revision,
-    /// Highest Policy revision whose complete content is still retained.
-    pub latest: Option<PreparedPolicy>,
+    /// Current Policy content, or `None` when the identity is tombstoned.
+    pub current: Option<PreparedPolicy>,
 }
 
 /// Durable allocation state for one Scope identity.
@@ -18,17 +17,8 @@ pub struct PolicyRevisionState {
 pub struct ScopeRevisionState {
     /// Highest revision ever allocated, including deleted revisions.
     pub last_allocated_revision: Revision,
-    /// Highest Scope revision whose complete content is still retained.
-    pub latest: Option<PreparedScope>,
-}
-
-/// Durable spec-allocation and current status for one Binding identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BindingRevisionState {
-    /// Highest immutable spec revision ever allocated.
-    pub last_allocated_revision: Revision,
-    /// Status of `last_allocated_revision`, which is the current retained spec.
-    pub status: BindingStatus,
+    /// Current Scope content, or `None` when the identity is tombstoned.
+    pub current: Option<PreparedScope>,
 }
 
 /// Bounded query result with the total before pagination.

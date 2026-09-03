@@ -105,7 +105,7 @@ where
                 selected_id = generated_resource_id()?;
                 continue;
             }
-            if let Some(current) = state.as_ref().and_then(|value| value.latest.as_ref())
+            if let Some(current) = state.as_ref().and_then(|value| value.current.as_ref())
                 && current.policy_name == policy_name
                 && &current.template == template
             {
@@ -127,7 +127,7 @@ where
         Err(PapError::Conflict)
     }
 
-    /// Gets one exact Policy revision.
+    /// Gets the current Policy when its revision matches exactly.
     ///
     /// # Errors
     /// Returns not-found or persistence errors.
@@ -139,7 +139,7 @@ where
         self.repository.get_policy(id, revision)
     }
 
-    /// Lists retained Policy revisions.
+    /// Lists current Policy records.
     ///
     /// # Errors
     /// Returns invalid-pagination or persistence errors.
@@ -148,7 +148,7 @@ where
         self.repository.list_policies(limit, offset)
     }
 
-    /// Deletes one exact Policy revision without allowing revision reuse.
+    /// Deletes the current Policy content without allowing revision reuse.
     ///
     /// # Errors
     /// Returns not-found, conflict, or persistence errors.
@@ -171,6 +171,10 @@ where
     }
 
     /// Updates one existing Scope identity to an authored selector.
+    ///
+    /// Identical latest content is idempotent. Changed content receives the
+    /// next never-reused revision, with the repository atomically rejecting a
+    /// stale allocation head so this service can retry from the winning update.
     ///
     /// # Errors
     /// Returns validation, conflict, revision, or persistence errors.
@@ -205,7 +209,7 @@ where
                 selected_id = generated_resource_id()?;
                 continue;
             }
-            if let Some(current) = state.as_ref().and_then(|value| value.latest.as_ref())
+            if let Some(current) = state.as_ref().and_then(|value| value.current.as_ref())
                 && &current.selector == selector
                 && current.template == template
             {
@@ -234,7 +238,7 @@ where
         Err(PapError::Conflict)
     }
 
-    /// Gets one exact Scope revision.
+    /// Gets the current Scope when its revision matches exactly.
     ///
     /// # Errors
     /// Returns not-found or persistence errors.
@@ -246,7 +250,7 @@ where
         self.repository.get_scope(id, revision)
     }
 
-    /// Lists retained Scope revisions.
+    /// Lists current Scope records.
     ///
     /// # Errors
     /// Returns invalid-pagination or persistence errors.
@@ -255,7 +259,7 @@ where
         self.repository.list_scopes(limit, offset)
     }
 
-    /// Deletes one exact Scope revision without allowing revision reuse.
+    /// Deletes the current Scope content without allowing revision reuse.
     ///
     /// # Errors
     /// Returns not-found, conflict, or persistence errors.
@@ -290,18 +294,19 @@ where
         )
     }
 
-    /// Updates one existing immutable Binding spec to Apply intent.
+    /// Updates the single current Binding record to Apply intent.
     ///
     /// Policy and Scope references are resolved to complete immutable snapshots.
     /// An identical spec is idempotent while Apply is pending, running, or
-    /// complete. UPDATE after deletion or terminal failure returns status to
-    /// pending Apply without changing identical spec content. Changed spec
-    /// content receives the next never-reused revision.
+    /// complete. Every other accepted Apply intent receives the next
+    /// never-reused revision and atomically replaces the current Binding record.
+    /// Changed desired state is rejected while Apply or Delete is running.
     /// This PAP-only phase leaves accepted work in `PENDING_APPLY` and does not
     /// translate or dispatch the Binding.
     ///
     /// # Errors
-    /// Returns not-found, validation, conflict, revision, or persistence errors.
+    /// Returns not-found, validation, operation-in-progress, conflict, revision,
+    /// or persistence errors.
     pub fn update_binding(
         &self,
         binding_id: &ResourceId,
@@ -327,49 +332,57 @@ where
         scope_id: &ResourceId,
         scope_revision: Revision,
     ) -> Result<BindingView, PapError> {
-        let policy = self.repository.get_policy(policy_id, policy_revision)?;
-        let scope = self.repository.get_scope(scope_id, scope_revision)?;
         let (update_existing, mut selected_id) = match target {
             WriteTarget::Create => (false, generated_resource_id()?),
             WriteTarget::Update(id) => (true, id.clone()),
         };
 
         for _ in 0..MAX_WRITE_ATTEMPTS {
-            let state = self.repository.get_binding_revision_state(&selected_id)?;
-            if update_existing && state.is_none() {
-                return Err(PapError::NotFound);
+            let current = match self.repository.get_binding(&selected_id) {
+                Ok(current) if update_existing => Some(current),
+                Ok(_) => {
+                    selected_id = generated_resource_id()?;
+                    continue;
+                }
+                Err(PapError::NotFound) if update_existing => return Err(PapError::NotFound),
+                Err(PapError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
+            if let Some(current) = current.as_ref() {
+                if current.status == BindingStatus::Deleting {
+                    return Err(PapError::OperationInProgress);
+                }
+                if current.status == BindingStatus::Applying {
+                    let identical_reference = current.spec.policy.policy_id == *policy_id
+                        && current.spec.policy.revision == policy_revision
+                        && current.spec.scope.scope_id == *scope_id
+                        && current.spec.scope.revision == scope_revision;
+                    return if identical_reference {
+                        Ok(current.clone())
+                    } else {
+                        Err(PapError::OperationInProgress)
+                    };
+                }
             }
-            if !update_existing && state.is_some() {
-                selected_id = generated_resource_id()?;
-                continue;
-            }
-            if let Some(current) = state.as_ref() {
-                let current_spec = self
-                    .repository
-                    .get_binding_spec(&selected_id, current.last_allocated_revision)?;
-                if current_spec.policy == policy && current_spec.scope == scope {
-                    let next_status = current.status.request_apply();
-                    if next_status == current.status {
-                        return binding_view(current_spec, current.status);
-                    }
+            let policy =
+                self.resolve_binding_policy(current.as_ref(), policy_id, policy_revision)?;
+            let scope = self.resolve_binding_scope(current.as_ref(), scope_id, scope_revision)?;
 
-                    // TODO(policy-reconciliation): atomically persist a durable Apply intent and
-                    // introduce the ordering/CAS token defined by the outbox/reconciler design.
-                    match self.repository.update_binding_status(
-                        &selected_id,
-                        current_spec.binding_revision,
-                        current.status,
-                        next_status,
-                    ) {
-                        Ok(status) => return binding_view(current_spec, status),
-                        Err(PapError::Conflict) => continue,
-                        Err(error) => return Err(error),
+            if let Some(current) = current.as_ref() {
+                let identical = current.spec.policy == policy && current.spec.scope == scope;
+                if identical {
+                    let next_status = current
+                        .status
+                        .request_apply()
+                        .map_err(|_| PapError::OperationInProgress)?;
+                    if next_status == current.status {
+                        return Ok(current.clone());
                     }
                 }
             }
 
             let revision =
-                next_revision(state.as_ref().map(|value| value.last_allocated_revision))?;
+                next_revision(current.as_ref().map(|value| value.spec.binding_revision))?;
             let spec = PreparedBinding {
                 binding_id: selected_id.clone(),
                 binding_revision: revision,
@@ -377,12 +390,12 @@ where
                 scope: scope.clone(),
             };
             let initial_status = BindingStatus::PendingApply;
-            binding_view(spec.clone(), initial_status)?;
+            let binding = binding_view(spec, initial_status)?;
 
             // TODO(policy-reconciliation): atomically persist a durable reconcile intent with this
-            // new spec/status pointer and introduce its ordering/CAS token before any Adapter
-            // worker is introduced. No outbox or dispatch is intentionally performed here.
-            match self.repository.put_binding_revision(&spec, initial_status) {
+            // current Binding replacement before any Adapter worker is introduced. No outbox or
+            // dispatch is intentionally performed here.
+            match self.repository.update_binding(&binding) {
                 Err(PapError::Conflict) => {
                     if !update_existing {
                         selected_id = generated_resource_id()?;
@@ -394,7 +407,45 @@ where
         Err(PapError::Conflict)
     }
 
-    /// Gets the current immutable Binding spec and mutable status.
+    fn resolve_binding_policy(
+        &self,
+        current: Option<&BindingView>,
+        policy_id: &ResourceId,
+        policy_revision: Revision,
+    ) -> Result<PreparedPolicy, PapError> {
+        match self.repository.get_policy(policy_id, policy_revision) {
+            Ok(policy) => Ok(policy),
+            Err(PapError::NotFound) => current
+                .filter(|binding| {
+                    binding.spec.policy.policy_id == *policy_id
+                        && binding.spec.policy.revision == policy_revision
+                })
+                .map(|binding| binding.spec.policy.clone())
+                .ok_or(PapError::NotFound),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_binding_scope(
+        &self,
+        current: Option<&BindingView>,
+        scope_id: &ResourceId,
+        scope_revision: Revision,
+    ) -> Result<PreparedScope, PapError> {
+        match self.repository.get_scope(scope_id, scope_revision) {
+            Ok(scope) => Ok(scope),
+            Err(PapError::NotFound) => current
+                .filter(|binding| {
+                    binding.spec.scope.scope_id == *scope_id
+                        && binding.spec.scope.revision == scope_revision
+                })
+                .map(|binding| binding.spec.scope.clone())
+                .ok_or(PapError::NotFound),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Gets the current Binding snapshot and mutable status.
     ///
     /// # Errors
     /// Returns not-found or persistence errors.
@@ -411,39 +462,35 @@ where
         self.repository.list_bindings(limit, offset)
     }
 
-    /// Accepts Delete intent without changing the Binding spec revision.
+    /// Accepts Delete intent as a new Binding revision.
     ///
-    /// The status enters `PENDING_DELETE`; repeated deletion is idempotent
-    /// while pending, running, or complete. A terminal Delete failure returns to
-    /// pending Delete when explicitly retried. The complete immutable spec
-    /// remains available for target-side detach.
+    /// The status enters `PENDING_DELETE`; repeated deletion is idempotent while
+    /// pending, running, or complete. Any other accepted Delete intent allocates
+    /// the next revision and atomically replaces the current Binding record.
+    /// Delete cannot interrupt a running Apply. The complete current spec remains
+    /// available for target-side detach.
     ///
     /// # Errors
-    /// Returns not-found, conflict, validation, or persistence errors.
+    /// Returns not-found, operation-in-progress, conflict, validation, revision,
+    /// or persistence errors.
     pub fn delete_binding(&self, id: &ResourceId) -> Result<BindingView, PapError> {
         for _ in 0..MAX_WRITE_ATTEMPTS {
-            let Some(state) = self.repository.get_binding_revision_state(id)? else {
-                return Err(PapError::NotFound);
-            };
-            let spec = self
-                .repository
-                .get_binding_spec(id, state.last_allocated_revision)?;
-            let next_status = state.status.request_delete();
-            if next_status == state.status {
-                return binding_view(spec, state.status);
+            let current = self.repository.get_binding(id)?;
+            let next_status = current
+                .status
+                .request_delete()
+                .map_err(|_| PapError::OperationInProgress)?;
+            if next_status == current.status {
+                return Ok(current);
             }
-            binding_view(spec.clone(), next_status)?;
+            let mut spec = current.spec;
+            spec.binding_revision = next_revision(Some(spec.binding_revision))?;
+            let binding = binding_view(spec, next_status)?;
 
             // TODO(policy-reconciliation): persist a durable Detach intent in the same
-            // transaction as this status transition and its future ordering/CAS token. The
-            // immutable Binding spec revision does not change.
-            match self.repository.update_binding_status(
-                id,
-                spec.binding_revision,
-                state.status,
-                next_status,
-            ) {
-                Ok(status) => return binding_view(spec, status),
+            // transaction as this current Binding replacement.
+            match self.repository.update_binding(&binding) {
+                Ok(binding) => return Ok(binding),
                 Err(PapError::Conflict) => {}
                 Err(error) => return Err(error),
             }

@@ -56,7 +56,7 @@ fn binding_view_exposes_status_without_duplicate_spec_identity() {
 }
 
 #[test]
-fn binding_lifecycle_defines_success_retry_failure_and_reversal() {
+fn binding_lifecycle_separates_new_requests_from_worker_transitions() {
     let spec = prepared_binding();
     let pending_apply = BindingStatus::PendingApply;
     assert_eq!(spec.binding_revision.get(), 7);
@@ -75,39 +75,27 @@ fn binding_lifecycle_defines_success_retry_failure_and_reversal() {
     assert_eq!(apply_failed, BindingStatus::ApplyFailed);
     assert!(apply_failed.is_terminal());
 
-    let retried_apply = apply_failed.request_apply();
+    let retried_apply = apply_failed.request_apply().unwrap();
     assert_eq!(retried_apply, BindingStatus::PendingApply);
-    apply_failed.validate_successor(retried_apply).unwrap();
+    assert!(apply_failed.validate_successor(retried_apply).is_err());
     let applying = retried_apply.start_reconcile().unwrap();
     let ready = applying.complete_reconcile().unwrap();
     assert_eq!(ready, BindingStatus::Ready);
     assert!(ready.is_terminal());
     assert_eq!(
-        ready.request_apply(),
+        ready.request_apply().unwrap(),
         ready,
         "an identical PUT after successful Apply is idempotent"
     );
 
-    let pending_delete = ready.request_delete();
+    let pending_delete = ready.request_delete().unwrap();
     assert_eq!(pending_delete, BindingStatus::PendingDelete);
+    assert!(ready.validate_successor(pending_delete).is_err());
     let deleting = pending_delete.start_reconcile().unwrap();
     assert_eq!(deleting, BindingStatus::Deleting);
+    assert!(deleting.request_apply().is_err());
+    assert!(applying.request_delete().is_err());
 
-    let reversed = deleting.request_apply();
-    assert_eq!(reversed, BindingStatus::PendingApply);
-    let stale_deleted = deleting.complete_reconcile().unwrap();
-    assert!(
-        reversed.validate_successor(stale_deleted).is_err(),
-        "Deleted is not a legal successor of a newer pending Apply state"
-    );
-
-    let ready = reversed
-        .start_reconcile()
-        .unwrap()
-        .complete_reconcile()
-        .unwrap();
-    let pending_delete = ready.request_delete();
-    let deleting = pending_delete.start_reconcile().unwrap();
     let retry_delete = deleting.retry_reconcile().unwrap();
     assert_eq!(retry_delete, BindingStatus::PendingDelete);
     let deleting = retry_delete.start_reconcile().unwrap();
@@ -115,8 +103,9 @@ fn binding_lifecycle_defines_success_retry_failure_and_reversal() {
     assert_eq!(delete_failed, BindingStatus::DeleteFailed);
     assert!(delete_failed.is_terminal());
 
-    let retried_delete = delete_failed.request_delete();
+    let retried_delete = delete_failed.request_delete().unwrap();
     assert_eq!(retried_delete, BindingStatus::PendingDelete);
+    assert!(delete_failed.validate_successor(retried_delete).is_err());
     let deleted = retried_delete
         .start_reconcile()
         .unwrap()
@@ -124,7 +113,7 @@ fn binding_lifecycle_defines_success_retry_failure_and_reversal() {
         .unwrap();
     assert_eq!(deleted, BindingStatus::Deleted);
     assert!(deleted.is_terminal());
-    assert_eq!(deleted.request_delete(), deleted);
+    assert_eq!(deleted.request_delete().unwrap(), deleted);
 }
 
 #[test]
