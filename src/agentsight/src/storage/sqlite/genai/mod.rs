@@ -27,6 +27,25 @@ use std::time::{Duration, Instant};
 use super::connection::{create_connection, default_base_path};
 use crate::config::BatchConfig;
 
+/// SQL mirror of [`TokenRecord::billed_input_tokens`].
+///
+/// Anthropic reports `cache_creation_tokens` / `cache_read_tokens` outside
+/// `input_tokens`, so they add to the billed input. OpenAI-compatible gateways
+/// and Gemini already count cached tokens inside the reported input, so adding
+/// them again inflates every cached call. These aggregations run in SQLite and
+/// cannot call the Rust helper, so the rule is restated here — keep the two in
+/// sync.
+///
+/// Deriving totals from the raw columns instead of reading the stored
+/// `total_tokens` also corrects rows written before this rule existed, since
+/// `input_tokens` and the cache columns have always held what the provider
+/// reported.
+///
+/// [`TokenRecord::billed_input_tokens`]: crate::analyzer::TokenRecord::billed_input_tokens
+const BILLED_INPUT_SQL: &str = "CASE WHEN LOWER(COALESCE(provider, '')) = 'anthropic' \
+     THEN input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0) \
+     ELSE input_tokens END";
+
 // Re-export public types from sub-modules
 pub use events::TraceEventDetail;
 pub use pending::{PendingCallInfo, PendingOrigin, SseEnrichment};

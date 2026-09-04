@@ -2,7 +2,7 @@
 
 use rusqlite::params;
 
-use super::GenAISqliteStore;
+use super::{BILLED_INPUT_SQL, GenAISqliteStore};
 
 // ─── Query result types ────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ impl GenAISqliteStore {
                     COUNT(DISTINCT conversation_id) AS conversation_count,
                     MIN(start_timestamp_ns)  AS first_seen_ns,
                     MAX(start_timestamp_ns)  AS last_seen_ns,
-                    COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)  AS total_input,
+                    COALESCE(SUM({BILLED_INPUT_SQL}), 0)  AS total_input,
                     COALESCE(SUM(output_tokens), 0) AS total_output,
                     MAX(model)               AS model,
                     MAX(agent_name)          AS agent_name,
@@ -140,9 +140,10 @@ impl GenAISqliteStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let sql = if agent_name.is_some() {
-            "SELECT session_id,
+            format!(
+                "SELECT session_id,
                     MAX(agent_name)                  AS agent_name,
-                    COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)   AS total_input,
+                    COALESCE(SUM({BILLED_INPUT_SQL}), 0)   AS total_input,
                     COALESCE(SUM(output_tokens), 0)  AS total_output,
                     COUNT(*)                         AS request_count
              FROM genai_events
@@ -152,10 +153,12 @@ impl GenAISqliteStore {
                AND agent_name = ?3
              GROUP BY session_id
              ORDER BY MAX(start_timestamp_ns) DESC"
+            )
         } else {
-            "SELECT session_id,
+            format!(
+                "SELECT session_id,
                     MAX(agent_name)                  AS agent_name,
-                    COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)   AS total_input,
+                    COALESCE(SUM({BILLED_INPUT_SQL}), 0)   AS total_input,
                     COALESCE(SUM(output_tokens), 0)  AS total_output,
                     COUNT(*)                         AS request_count
              FROM genai_events
@@ -164,9 +167,10 @@ impl GenAISqliteStore {
                AND start_timestamp_ns BETWEEN ?1 AND ?2
              GROUP BY session_id
              ORDER BY MAX(start_timestamp_ns) DESC"
+            )
         };
 
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SavingsSessionSummary> {
             Ok(SavingsSessionSummary {
@@ -201,17 +205,19 @@ impl GenAISqliteStore {
     ) -> Result<Option<SavingsSessionSummary>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
-        let sql = "SELECT session_id,
+        let sql = format!(
+            "SELECT session_id,
                     MAX(agent_name)                  AS agent_name,
-                    COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)   AS total_input,
+                    COALESCE(SUM({BILLED_INPUT_SQL}), 0)   AS total_input,
                     COALESCE(SUM(output_tokens), 0)  AS total_output,
                     COUNT(*)                         AS request_count
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND session_id = ?1
-             GROUP BY session_id";
+             GROUP BY session_id"
+        );
 
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query_map(rusqlite::params![session_id], |row| {
             Ok(SavingsSessionSummary {
                 session_id: row.get(0)?,
@@ -344,7 +350,7 @@ impl GenAISqliteStore {
             format!(
                 "SELECT conversation_id,
                         COUNT(*)                        AS call_count,
-                        COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)  AS total_input,
+                        COALESCE(SUM({BILLED_INPUT_SQL}), 0)  AS total_input,
                         COALESCE(SUM(output_tokens), 0) AS total_output,
                         MIN(start_timestamp_ns)         AS start_ns,
                         MAX(end_timestamp_ns)           AS end_ns,
@@ -362,7 +368,7 @@ impl GenAISqliteStore {
             format!(
                 "SELECT conversation_id,
                         COUNT(*)                        AS call_count,
-                        COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)  AS total_input,
+                        COALESCE(SUM({BILLED_INPUT_SQL}), 0)  AS total_input,
                         COALESCE(SUM(output_tokens), 0) AS total_output,
                         MIN(start_timestamp_ns)         AS start_ns,
                         MAX(end_timestamp_ns)           AS end_ns,
@@ -380,7 +386,7 @@ impl GenAISqliteStore {
             format!(
                 "SELECT conversation_id,
                         COUNT(*)                        AS call_count,
-                        COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)  AS total_input,
+                        COALESCE(SUM({BILLED_INPUT_SQL}), 0)  AS total_input,
                         COALESCE(SUM(output_tokens), 0) AS total_output,
                         MIN(start_timestamp_ns)         AS start_ns,
                         MAX(end_timestamp_ns)           AS end_ns,
@@ -398,7 +404,7 @@ impl GenAISqliteStore {
             format!(
                 "SELECT conversation_id,
                         COUNT(*)                        AS call_count,
-                        COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)  AS total_input,
+                        COALESCE(SUM({BILLED_INPUT_SQL}), 0)  AS total_input,
                         COALESCE(SUM(output_tokens), 0) AS total_output,
                         MIN(start_timestamp_ns)         AS start_ns,
                         MAX(end_timestamp_ns)           AS end_ns,

@@ -2,7 +2,7 @@
 
 use rusqlite::params;
 
-use super::GenAISqliteStore;
+use super::{BILLED_INPUT_SQL, GenAISqliteStore};
 
 // ─── Query result types ────────────────────────────────────────────────────────
 
@@ -399,34 +399,40 @@ impl GenAISqliteStore {
 
         // Build query with optional agent_name filter
         let sql = if agent_name.is_some() {
-            "SELECT
+            format!(
+                "SELECT
                 (start_timestamp_ns - ?1) / ?3            AS bucket_idx,
                 ?1 + ((start_timestamp_ns - ?1) / ?3) * ?3 AS bucket_start_ns,
-                COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS input_tokens,
+                COALESCE(SUM({billed}), 0)                AS input_tokens,
                 COALESCE(SUM(output_tokens), 0)           AS output_tokens,
-                COALESCE(SUM(input_tokens + output_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens
+                COALESCE(SUM(({billed}) + output_tokens), 0) AS total_tokens
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND start_timestamp_ns BETWEEN ?1 AND ?2
                AND agent_name = ?4
              GROUP BY bucket_idx
-             ORDER BY bucket_idx ASC"
+             ORDER BY bucket_idx ASC",
+                billed = BILLED_INPUT_SQL
+            )
         } else {
-            "SELECT
+            format!(
+                "SELECT
                 (start_timestamp_ns - ?1) / ?3            AS bucket_idx,
                 ?1 + ((start_timestamp_ns - ?1) / ?3) * ?3 AS bucket_start_ns,
-                COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS input_tokens,
+                COALESCE(SUM({billed}), 0)                AS input_tokens,
                 COALESCE(SUM(output_tokens), 0)           AS output_tokens,
-                COALESCE(SUM(input_tokens + output_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens
+                COALESCE(SUM(({billed}) + output_tokens), 0) AS total_tokens
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND start_timestamp_ns BETWEEN ?1 AND ?2
              GROUP BY bucket_idx
-             ORDER BY bucket_idx ASC"
+             ORDER BY bucket_idx ASC",
+                billed = BILLED_INPUT_SQL
+            )
         };
 
         let rows: Vec<TimeseriesBucket> = if let Some(name) = agent_name {
-            let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(&sql)?;
             stmt.query_map(params![start_ns, end_ns, bucket_ns, name], |row| {
                 Ok(TimeseriesBucket {
                     bucket_start_ns: row.get(1)?,
@@ -437,7 +443,7 @@ impl GenAISqliteStore {
             })?
             .collect::<Result<Vec<_>, _>>()?
         } else {
-            let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(&sql)?;
             stmt.query_map(params![start_ns, end_ns, bucket_ns], |row| {
                 Ok(TimeseriesBucket {
                     bucket_start_ns: row.get(1)?,
@@ -467,32 +473,38 @@ impl GenAISqliteStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let sql = if agent_name.is_some() {
-            "SELECT
+            format!(
+                "SELECT
                 (start_timestamp_ns - ?1) / ?3            AS bucket_idx,
                 ?1 + ((start_timestamp_ns - ?1) / ?3) * ?3 AS bucket_start_ns,
                 COALESCE(model, 'unknown')                 AS model,
-                COALESCE(SUM(input_tokens + output_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens
+                COALESCE(SUM(({billed}) + output_tokens), 0) AS total_tokens
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND start_timestamp_ns BETWEEN ?1 AND ?2
                AND agent_name = ?4
              GROUP BY bucket_idx, model
-             ORDER BY bucket_idx ASC"
+             ORDER BY bucket_idx ASC",
+                billed = BILLED_INPUT_SQL
+            )
         } else {
-            "SELECT
+            format!(
+                "SELECT
                 (start_timestamp_ns - ?1) / ?3            AS bucket_idx,
                 ?1 + ((start_timestamp_ns - ?1) / ?3) * ?3 AS bucket_start_ns,
                 COALESCE(model, 'unknown')                 AS model,
-                COALESCE(SUM(input_tokens + output_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens
+                COALESCE(SUM(({billed}) + output_tokens), 0) AS total_tokens
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND start_timestamp_ns BETWEEN ?1 AND ?2
              GROUP BY bucket_idx, model
-             ORDER BY bucket_idx ASC"
+             ORDER BY bucket_idx ASC",
+                billed = BILLED_INPUT_SQL
+            )
         };
 
         let rows: Vec<ModelTimeseriesBucket> = if let Some(name) = agent_name {
-            let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(&sql)?;
             stmt.query_map(params![start_ns, end_ns, bucket_ns, name], |row| {
                 Ok(ModelTimeseriesBucket {
                     bucket_start_ns: row.get(1)?,
@@ -502,7 +514,7 @@ impl GenAISqliteStore {
             })?
             .collect::<Result<Vec<_>, _>>()?
         } else {
-            let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(&sql)?;
             stmt.query_map(params![start_ns, end_ns, bucket_ns], |row| {
                 Ok(ModelTimeseriesBucket {
                     bucket_start_ns: row.get(1)?,
@@ -521,16 +533,14 @@ impl GenAISqliteStore {
         &self,
     ) -> Result<Vec<AgentActivitySummary>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT MIN(COALESCE(NULLIF(TRIM(agent_name), ''),
                                 NULLIF(TRIM(process_name), ''))) AS display_name,
                     MAX(CASE WHEN end_timestamp_ns IS NOT NULL AND end_timestamp_ns > 0
                              THEN end_timestamp_ns ELSE start_timestamp_ns END) AS last_seen_ns,
                     COUNT(*) AS total_calls,
-                    COALESCE(SUM(COALESCE(input_tokens, 0)
-                               + COALESCE(output_tokens, 0)
-                               + COALESCE(cache_creation_tokens, 0)
-                               + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens
+                    COALESCE(SUM(COALESCE({billed}, 0)
+                               + COALESCE(output_tokens, 0)), 0) AS total_tokens
              FROM genai_events
              WHERE event_type = 'llm_call'
                AND COALESCE(NULLIF(TRIM(agent_name), ''),
@@ -538,7 +548,8 @@ impl GenAISqliteStore {
              GROUP BY COALESCE(NULLIF(TRIM(agent_name), ''),
                                NULLIF(TRIM(process_name), '')) COLLATE NOCASE
              ORDER BY last_seen_ns DESC, display_name ASC",
-        )?;
+            billed = BILLED_INPUT_SQL
+        ))?;
         let rows = stmt.query_map([], |row| {
             Ok(AgentActivitySummary {
                 agent_name: row.get(0)?,
@@ -558,17 +569,18 @@ impl GenAISqliteStore {
         &self,
     ) -> Result<Vec<AgentTokenSummary>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT COALESCE(agent_name, process_name, 'unknown') AS agent,
-                    COALESCE(SUM(input_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS input_tokens,
+                    COALESCE(SUM({billed}), 0)      AS input_tokens,
                     COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                    COALESCE(SUM(input_tokens + output_tokens + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0) AS total_tokens,
+                    COALESCE(SUM(({billed}) + output_tokens), 0) AS total_tokens,
                     COUNT(*)                        AS request_count
              FROM genai_events
              WHERE event_type = 'llm_call'
              GROUP BY agent
              ORDER BY total_tokens DESC",
-        )?;
+            billed = BILLED_INPUT_SQL
+        ))?;
         let rows = stmt.query_map([], |row| {
             Ok(AgentTokenSummary {
                 agent_name: row.get(0)?,
