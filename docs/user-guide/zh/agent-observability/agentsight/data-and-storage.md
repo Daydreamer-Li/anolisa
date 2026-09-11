@@ -16,6 +16,7 @@ AgentSight 采集到的一切都以 SQLite 数据库形式留在本机。Dashboa
 | `interruption_events.db` | 检测到的中断，含类型、严重级别与证据 |
 | `optimization.db` | Dashboard 优化分析的结果 |
 | `trajectories.db` | ATIF v1.7 轨迹，仅在开启 `features.trajectory_collection` 时存在 |
+| `.agentsight-private/reuse.db` | 轨迹复用标签、人工决定、LLM verdict 与标签审计事件 |
 | `.dashboard_token` | Dashboard 访问令牌（64 位十六进制，仅 root 可读） |
 | `optimization_config.json` | 在 Dashboard 设置页填写的 LLM 配置（API Key 存于此） |
 | `*.db-wal`、`*.db-shm` | SQLite 预写日志与共享内存；属正常文件，干净退出时会做 checkpoint |
@@ -100,6 +101,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://<host>:7396/api/sessions
 | Token 节省 | `GET /api/token-savings`、`GET /api/token-savings/session/{id}` | Tokenless 节省量 |
 | ATIF 导出 | `GET /api/export/atif/session/{id}`（还有 `trace`、`conversation`） | 轨迹导出 |
 | 轨迹 | `GET /api/trajectories`、`/filters`、`/steps`、`/{session_id}` | 已采集轨迹 |
+| 复用标签 | `POST /api/reuse/triage`、`GET /api/reuse/sessions`、`POST /api/reuse/sessions/{session_id}/label`、`POST /api/reuse/sessions/labels:batch-confirm`、`GET /api/reuse/label-stats`、`POST /api/reuse/judge` | 规则分诊与人工标签决定。judge 需要 `features.reuse_llm_judge=true` 与已配置的 LLM 凭据，并会产生付费模型调用 |
 | 偏好 | `GET /api/preferences`、`/export`、`/turns` | 用户偏好分析、Markdown 导出，以及供 Agent 侧推理使用的用户原始轮次 |
 | Skill 指标 | `GET /api/skill-metrics`、`/downloads`、`/loads`、`/usage-ratio`、`/distribution`、`/hotness` | Skill 采纳情况 |
 | 优化分析 | `POST /api/optimize/sessions/{id}/{dimension}`、`GET /api/optimize/results`、`GET` 与 `POST /api/optimize/config` | LLM 辅助分析 |

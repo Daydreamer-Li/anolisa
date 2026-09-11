@@ -17,6 +17,7 @@ read them.
 | `interruption_events.db` | Detected interruptions with their type, severity, and evidence |
 | `optimization.db` | Results of Dashboard optimization analyses |
 | `trajectories.db` | ATIF v1.7 trajectories, only when `features.trajectory_collection` is enabled |
+| `.agentsight-private/reuse.db` | Trajectory reuse labels, human decisions, LLM verdicts, and label audit events |
 | `.dashboard_token` | The Dashboard access token (64 hex characters, root-only) |
 | `optimization_config.json` | LLM settings entered on the Dashboard Settings page (API key stored here) |
 | `*.db-wal`, `*.db-shm` | SQLite write-ahead log and shared memory; normal, and checkpointed on clean shutdown |
@@ -107,6 +108,7 @@ Endpoint groups in 0.11:
 | Token savings | `GET /api/token-savings`, `GET /api/token-savings/session/{id}` | Tokenless savings |
 | ATIF export | `GET /api/export/atif/session/{id}` (also `trace` and `conversation`) | Trajectory export |
 | Trajectories | `GET /api/trajectories`, `/filters`, `/steps`, `/{session_id}` | Collected trajectories |
+| Reuse labels | `POST /api/reuse/triage`, `GET /api/reuse/sessions`, `POST /api/reuse/sessions/{session_id}/label`, `POST /api/reuse/sessions/labels:batch-confirm`, `GET /api/reuse/label-stats`, `POST /api/reuse/judge` | Rule triage and human label decisions. The judge requires `features.reuse_llm_judge=true` and configured LLM credentials; it makes billed model calls |
 | Preferences | `GET /api/preferences`, `/export`, `/turns` | User preference analysis, Markdown export, and source user turns for agent-side reasoning |
 | Skill metrics | `GET /api/skill-metrics`, `/downloads`, `/loads`, `/usage-ratio`, `/distribution`, `/hotness` | Skill adoption |
 | Optimization | `POST /api/optimize/sessions/{id}/{dimension}`, `GET /api/optimize/results`, `GET` and `POST /api/optimize/config` | LLM-assisted analysis |
