@@ -18,6 +18,7 @@ read them.
 | `optimization.db` | Results of Dashboard optimization analyses |
 | `trajectories.db` | ATIF v1.7 trajectories, only when `features.trajectory_collection` is enabled |
 | `.agentsight-private/reuse.db` | Trajectory reuse labels, human decisions, LLM verdicts, and label audit events |
+| `.agentsight-private/causal.db` | Durable causal-attribution cases |
 | `.dashboard_token` | The Dashboard access token (64 hex characters, root-only) |
 | `optimization_config.json` | LLM settings entered on the Dashboard Settings page (API key stored here) |
 | `*.db-wal`, `*.db-shm` | SQLite write-ahead log and shared memory; normal, and checkpointed on clean shutdown |
@@ -26,9 +27,11 @@ read them.
 how you browse a copy or an archive. The tracer itself always writes to the default directory.
 
 > `serve --db <path>` resolves every sibling store from the `--db` directory — GenAI events, the
-> interruption store, the trajectory store, and the health checker all follow it. So an archived
-> copy is shown in isolation, without mixing in the live host's data. Put the sibling `.db` files in
-> the same directory as the one you pass. A bare relative `--db name.db` uses the current directory.
+> interruption store, the trajectory store, and the health checker all follow it. The private reuse
+> and causal stores follow from its `.agentsight-private/` subdirectory. So an archived copy is shown
+> in isolation, without mixing in the live host's data. Put the sibling `.db` files and, when present,
+> `.agentsight-private/` directory beside the file you pass. A bare relative `--db name.db` uses the
+> current directory.
 
 > These files contain full prompts and model responses. Treat them as sensitive: keep the directory
 > permissions as installed, and be careful when copying them off the host.
@@ -107,7 +110,7 @@ Endpoint groups in 0.11:
 | Agent health | `GET /api/agent-health`, `DELETE /api/agent-health/{pid}`, `POST /api/agent-health/{pid}/restart` | Live Agent state and recovery actions |
 | Token savings | `GET /api/token-savings`, `GET /api/token-savings/session/{id}` | Tokenless savings |
 | ATIF export | `GET /api/export/atif/session/{id}` (also `trace` and `conversation`) | Trajectory export |
-| Trajectories | `GET /api/trajectories`, `/filters`, `/steps`, `/{session_id}` | Collected trajectories |
+| Trajectories | `GET /api/trajectories`, `/filters`, `/steps`, `/{session_id}` | Collected trajectories. The list accepts optional `label`, `exclude_label`, and `human_backed` filters; `label` is comma-separated effective labels such as `good,bad` |
 | Reuse labels | `POST /api/reuse/triage`, `GET /api/reuse/sessions`, `POST /api/reuse/sessions/{session_id}/label`, `POST /api/reuse/sessions/labels:batch-confirm`, `GET /api/reuse/label-stats`, `POST /api/reuse/judge` | Rule triage and human label decisions. The judge requires `features.reuse_llm_judge=true` and configured LLM credentials; it makes billed model calls |
 | Preferences | `GET /api/preferences`, `/export`, `/turns` | User preference analysis, Markdown export, and source user turns for agent-side reasoning |
 | Skill metrics | `GET /api/skill-metrics`, `/downloads`, `/loads`, `/usage-ratio`, `/distribution`, `/hotness` | Skill adoption |

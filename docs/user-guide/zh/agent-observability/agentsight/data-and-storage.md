@@ -17,6 +17,7 @@ AgentSight 采集到的一切都以 SQLite 数据库形式留在本机。Dashboa
 | `optimization.db` | Dashboard 优化分析的结果 |
 | `trajectories.db` | ATIF v1.7 轨迹，仅在开启 `features.trajectory_collection` 时存在 |
 | `.agentsight-private/reuse.db` | 轨迹复用标签、人工决定、LLM verdict 与标签审计事件 |
+| `.agentsight-private/causal.db` | 持久化的因果归因 case |
 | `.dashboard_token` | Dashboard 访问令牌（64 位十六进制，仅 root 可读） |
 | `optimization_config.json` | 在 Dashboard 设置页填写的 LLM 配置（API Key 存于此） |
 | `*.db-wal`、`*.db-shm` | SQLite 预写日志与共享内存；属正常文件，干净退出时会做 checkpoint |
@@ -25,7 +26,8 @@ AgentSight 采集到的一切都以 SQLite 数据库形式留在本机。Dashboa
 tracer 自身始终写入默认目录。
 
 > `serve --db <path>` 会让所有兄弟库都从 `--db` 所在目录解析——GenAI 事件、中断库、轨迹库以及
-> health checker 都跟着它走。因此归档副本是隔离展示的，不会混入当前主机的数据。请把兄弟 `.db` 文件放在
+> health checker 都跟着它走。私有的复用与因果库从其 `.agentsight-private/` 子目录解析。因此归档副本是
+> 隔离展示的，不会混入当前主机的数据。请把兄弟 `.db` 文件以及存在时的 `.agentsight-private/` 目录放在
 > 你传入的那个文件的同一目录下。裸相对路径 `--db name.db` 使用当前目录。
 
 > 这些文件包含完整的提示词与模型回答，请按敏感数据对待：保持安装时的目录权限，往外拷贝时务必谨慎。
@@ -100,7 +102,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://<host>:7396/api/sessions
 | Agent 健康 | `GET /api/agent-health`、`DELETE /api/agent-health/{pid}`、`POST /api/agent-health/{pid}/restart` | 实时状态与恢复动作 |
 | Token 节省 | `GET /api/token-savings`、`GET /api/token-savings/session/{id}` | Tokenless 节省量 |
 | ATIF 导出 | `GET /api/export/atif/session/{id}`（还有 `trace`、`conversation`） | 轨迹导出 |
-| 轨迹 | `GET /api/trajectories`、`/filters`、`/steps`、`/{session_id}` | 已采集轨迹 |
+| 轨迹 | `GET /api/trajectories`、`/filters`、`/steps`、`/{session_id}` | 已采集轨迹。列表支持可选的 `label`、`exclude_label`、`human_backed` 过滤；`label` 是逗号分隔的有效标签，例如 `good,bad` |
 | 复用标签 | `POST /api/reuse/triage`、`GET /api/reuse/sessions`、`POST /api/reuse/sessions/{session_id}/label`、`POST /api/reuse/sessions/labels:batch-confirm`、`GET /api/reuse/label-stats`、`POST /api/reuse/judge` | 规则分诊与人工标签决定。judge 需要 `features.reuse_llm_judge=true` 与已配置的 LLM 凭据，并会产生付费模型调用 |
 | 偏好 | `GET /api/preferences`、`/export`、`/turns` | 用户偏好分析、Markdown 导出，以及供 Agent 侧推理使用的用户原始轮次 |
 | Skill 指标 | `GET /api/skill-metrics`、`/downloads`、`/loads`、`/usage-ratio`、`/distribution`、`/hotness` | Skill 采纳情况 |
