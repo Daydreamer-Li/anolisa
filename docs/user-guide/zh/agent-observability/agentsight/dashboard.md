@@ -57,7 +57,7 @@ sudo systemctl reload agentsight.service
 
 | 页面 | 出现条件 |
 |---|---|
-| Agent 看板、Agent 可观测、会话列表、优化分析、Skill 指标、轨迹查看、设置 | 始终显示 |
+| Agent 看板、Agent 可观测、会话列表、复用标签、优化分析、Skill 指标、轨迹查看、设置 | 始终显示 |
 | Token 节省 | 装了 `tokenless`，或其统计数据库已存在 |
 | 安全可观测、系统审计 | 装了 `agent-sec-core`（daemon 或 CLI 均可） |
 | 风险拦截 | 装了 `agentsight-enforcer` 或其 socket 存在 |
@@ -101,6 +101,12 @@ Session 资源消耗。
 ![会话列表页：来源筛选与语义搜索](../../../../images/agentsight/zh/dashboard-sessions.png)
 
 **分析**按钮会把该会话送到优化分析页。
+
+## 复用标签
+
+对已采集轨迹做复用分诊的审阅页：先跑确定性规则分诊，再逐条或批量确认、改写 `good`、`bad`、`useless`、`unknown` 标签。规则永远不会自动标 `bad`；该结论只能来自人工决定，或附带引用轨迹步骤的 LLM 判定。
+
+可选的模型判定需要先开启 `features.reuse_llm_judge` 并在设置页配置优化 LLM 才会启用；判定会产生付费请求，批量执行时会展示进度。该页面通过始终存在的 `reuse_labels` 能力上报；`reuse.db` 不可用时页面仍然可见，并说明标签暂时无法读取。
 
 ## Token 节省
 

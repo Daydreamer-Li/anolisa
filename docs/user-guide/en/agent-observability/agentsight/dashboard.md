@@ -61,7 +61,7 @@ components on every page load and reports the result through `GET /api/auth/stat
 
 | Page | Appears when |
 |---|---|
-| Agent Dashboard, Agent Observability, Sessions, Optimization, Skill Metrics, Trajectory Viewer, Settings | Always |
+| Agent Dashboard, Agent Observability, Sessions, Reuse Labels, Optimization, Skill Metrics, Trajectory Viewer, Settings | Always |
 | Token Savings | `tokenless` is installed, or its statistics database exists |
 | Security Observability, System Audit | `agent-sec-core` is installed (daemon or CLI) |
 | Risk Enforcement | `agentsight-enforcer` is installed or its socket exists |
@@ -113,6 +113,12 @@ optimization LLM to rank candidates by intent, e.g. "fix build error".
 ![Sessions page with source filters and semantic search](../../../../images/agentsight/en/dashboard-sessions.png)
 
 **Analyze** sends the session to the Optimization page.
+
+## Reuse Labels
+
+Reviews collected trajectories for later Agent reuse. Run deterministic triage first, then confirm or override `good`, `bad`, `useless`, or `unknown` labels individually or in batch. The rules never assign `bad`; that verdict requires a human decision or an LLM judgement with a cited trajectory step.
+
+The optional model judge is available only after enabling `features.reuse_llm_judge` and configuring an optimization LLM. It runs billed requests and reports batch progress while it works. The page is advertised through the always-present `reuse_labels` capability; if `reuse.db` is unavailable, it remains visible and explains that labels cannot be read.
 
 ## Token Savings
 
