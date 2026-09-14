@@ -39,7 +39,8 @@ use. The reference copy shipped with the source is `src/agentsight/agentsight.js
     "audit": true,
     "token_consumption": false,
     "sls_logtail": false,
-    "trajectory_collection": { "enabled": false, "scan_interval_secs": 30 }
+    "trajectory_collection": { "enabled": false, "scan_interval_secs": 30 },
+    "reuse_llm_judge": false
   },
   "runtime_limits": {
     "event_channel_capacity": 10000,
@@ -87,6 +88,9 @@ instantiated at all, so it costs no memory and no I/O.
 | Token consumption records | `features.token_consumption` | `false` | Extra aggregated consumption records |
 | External log export | `features.sls_logtail` | `false` | Writes structured events to a log file for an external collector |
 | Trajectory collection | `features.trajectory_collection.enabled` | `false` | Periodically scans local Agent JSONL sessions into `trajectories.db` (trace mode only) |
+| Reuse LLM judge | `features.reuse_llm_judge` | `false` | Allows `POST /api/reuse/judge` to ask the configured LLM to label trajectories the rules cannot place; every call is billed |
+
+`reuse_llm_judge` affects only `POST /api/reuse/judge`. Leave it disabled unless you have configured an optimization LLM and explicitly want paid second-level labelling. Reload the service after changing it so the server reads the new setting.
 
 Tuning knobs that come with a feature:
 

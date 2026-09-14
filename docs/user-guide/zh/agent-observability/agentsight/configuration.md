@@ -38,7 +38,8 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
     "audit": true,
     "token_consumption": false,
     "sls_logtail": false,
-    "trajectory_collection": { "enabled": false, "scan_interval_secs": 30 }
+    "trajectory_collection": { "enabled": false, "scan_interval_secs": 30 },
+    "reuse_llm_judge": false
   },
   "runtime_limits": {
     "event_channel_capacity": 10000,
@@ -85,6 +86,9 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
 | Token 消费记录 | `features.token_consumption` | `false` | 额外的聚合消费记录 |
 | 外部日志导出 | `features.sls_logtail` | `false` | 把结构化事件写入文件，供外部采集器读取 |
 | 轨迹采集 | `features.trajectory_collection.enabled` | `false` | 周期扫描本地 Agent JSONL 会话写入 `trajectories.db`（仅 trace 模式） |
+| 轨迹 LLM 判定 | `features.reuse_llm_judge` | `false` | 允许 `POST /api/reuse/judge` 调用已配置的 LLM 判定规则无法归类的轨迹；每次调用都会产生费用 |
+
+`reuse_llm_judge` 只影响 `POST /api/reuse/judge`。除非已经配置优化 LLM 且明确需要付费的二级判定，否则请保持关闭。修改后 reload 服务，让 server 读取新配置。
 
 随功能附带的调节项：
 
