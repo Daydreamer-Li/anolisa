@@ -1,5 +1,25 @@
 # 更新日志
 
+## 0.13.1
+
+### 新功能
+- 新增 JSON 输出与优雅的 CLI 错误提示。
+
+### 修复
+- 命名空间 PID 解析为宿主 PID，并做 init namespace 自检。(#3041)
+- 主日志器遵循 RUST_LOG 正则。(#3186)
+- 为 5.10/6.6 内核的 file-delete-guard 增加 inode guard 支持。
+- traces 列表中移除 trace_id 别名。(#3261)
+- 修复 enforcer ringbuf 消费者在 mmap 推进后的陈旧文件描述符。
+- 加强凭证发现逻辑。
+- 将 drain 触发条件固定为 membarrier。
+- 新增 token-plan provider 预设。
+- 从请求工具定义中补全空的 tool_call 名称。
+- 记录语义搜索降级原因。(#3443)
+- 加强 SQLite 生命周期管理。
+- 为本地测试 fixture 补充复用字段。(#3444)
+- 将 qwen3.8-max 映射到对应 tokenizer。(#3409)
+
 ## 0.13.0
 
 ### 新功能

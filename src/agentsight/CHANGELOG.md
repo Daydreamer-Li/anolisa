@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.13.1
+
+### Features
+- Add JSON output and graceful CLI errors.
+
+### Fixes
+- Resolve namespace PIDs to host PIDs with an init-namespace self-check. (#3041)
+- Honor the RUST_LOG regex in the main logger. (#3186)
+- Add inode guard support for file-delete-guard on 5.10/6.6 kernels.
+- Drop the trace_id alias in the traces list. (#3261)
+- Fix a stale file descriptor in the enforcer ringbuf consumer after mmap advance.
+- Harden credential discovery.
+- Pin the drain trigger to membarrier.
+- Add a token-plan provider preset.
+- Recover empty tool_call names from request tool definitions.
+- Log semantic-search degradation causes. (#3443)
+- Harden the SQLite lifecycle.
+- Add reuse fields to local test fixtures. (#3444)
+- Map qwen3.8-max to its tokenizer. (#3409)
+
 ## 0.13.0
 
 ### Features
