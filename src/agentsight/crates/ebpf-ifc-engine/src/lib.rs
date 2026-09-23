@@ -591,7 +591,27 @@ fn pinned_hash_map<K: aya::Pod, V: aya::Pod>(
     HashMap::try_from(Map::HashMap(data)).map_err(|e| err(format!("pinned map {name}: {e}")))
 }
 
-fn pinned_engine_present(paths: &PinnedEnginePaths, reserve: HookReserve) -> io::Result<bool> {
+/// Outcome of matching a pin root against the active hook reserve.
+///
+/// `Incompatible` pins (stale schema marker or foreign hook links) cannot be
+/// opened, and reinstalling over them would fail every `BPF_OBJ_PIN` with
+/// EEXIST; `open_or_install_singleton` clears such roots before reinstalling
+/// so upgrades converge without manual cleanup (#3445).
+#[derive(Debug, Eq, PartialEq)]
+enum PinnedEnginePresence {
+    /// Every required map, the profile marker, and expected links exist.
+    Present,
+    /// The pin root is incomplete: missing maps or expected links.
+    Absent,
+    /// The pin root is foreign to this binary. Carries the mismatch
+    /// description used verbatim in error messages.
+    Incompatible(String),
+}
+
+fn pinned_engine_state(
+    paths: &PinnedEnginePaths,
+    reserve: HookReserve,
+) -> io::Result<PinnedEnginePresence> {
     for name in [
         "rb",
         "cap_req",
@@ -607,12 +627,12 @@ fn pinned_engine_present(paths: &PinnedEnginePaths, reserve: HookReserve) -> io:
         "te_inode_guard",
     ] {
         if !paths.map(name).try_exists()? {
-            return Ok(false);
+            return Ok(PinnedEnginePresence::Absent);
         }
     }
     let marker = reserve.profile_marker();
     if !paths.map(marker).try_exists()? {
-        return Err(err(format!(
+        return Ok(PinnedEnginePresence::Incompatible(format!(
             "ActPlane pinned metadata mismatch at {}: expected {marker}; remove the pin root before changing ActPlane revision, profile, or schema",
             paths.root.display()
         )));
@@ -622,10 +642,10 @@ fn pinned_engine_present(paths: &PinnedEnginePaths, reserve: HookReserve) -> io:
         let exists = paths.link(spec.name).try_exists()?;
         let expected = tracepoint_needed(spec, budget);
         if expected && !exists {
-            return Ok(false);
+            return Ok(PinnedEnginePresence::Absent);
         }
         if exists && !expected {
-            return Err(pinned_profile_mismatch(paths, spec.name));
+            return Ok(pinned_profile_mismatch(paths, spec.name));
         }
     }
 
@@ -634,20 +654,58 @@ fn pinned_engine_present(paths: &PinnedEnginePaths, reserve: HookReserve) -> io:
         let exists = paths.link(name).try_exists()?;
         let expected = lsm_link_expected(name, budget, lsm_active);
         if expected && !exists {
-            return Ok(false);
+            return Ok(PinnedEnginePresence::Absent);
         }
         if exists && !expected {
-            return Err(pinned_profile_mismatch(paths, name));
+            return Ok(pinned_profile_mismatch(paths, name));
         }
     }
-    Ok(true)
+    Ok(PinnedEnginePresence::Present)
 }
 
-fn pinned_profile_mismatch(paths: &PinnedEnginePaths, link: &str) -> io::Error {
-    err(format!(
+fn pinned_engine_present(paths: &PinnedEnginePaths, reserve: HookReserve) -> io::Result<bool> {
+    match pinned_engine_state(paths, reserve)? {
+        PinnedEnginePresence::Present => Ok(true),
+        PinnedEnginePresence::Absent => Ok(false),
+        PinnedEnginePresence::Incompatible(reason) => Err(err(reason)),
+    }
+}
+
+fn pinned_profile_mismatch(paths: &PinnedEnginePaths, link: &str) -> PinnedEnginePresence {
+    PinnedEnginePresence::Incompatible(format!(
         "ActPlane pinned hook profile mismatch at {}: unexpected link {link}; remove the pin root before changing profiles",
         paths.root.display()
     ))
+}
+
+/// Remove a stale or partial pin root so a reinstall cannot collide with
+/// `BPF_OBJ_PIN` EEXIST on leftover maps and links (#3445).
+///
+/// Unlinking a pinned BPF link detaches it, while unlinking a map pin only
+/// drops the bpffs reference; in-kernel objects live on until their last fd
+/// closes, so a concurrently draining runtime keeps its open handles. Only
+/// call this once the pin root is known not to be `Present`.
+fn remove_pinned_engine(paths: &PinnedEnginePaths) -> io::Result<()> {
+    if !paths.root.try_exists()? {
+        return Ok(());
+    }
+    // Defense in depth against a mis-set ACTPLANE_PIN_ROOT: never remove a
+    // populated directory that does not look like a pin root; an empty
+    // directory is always safe to clear.
+    let pin_layout = paths.maps_dir().try_exists()? || paths.links_dir().try_exists()?;
+    let empty = paths.root.read_dir()?.next().is_none();
+    if !pin_layout && !empty {
+        return Err(err(format!(
+            "refusing to remove {}: not an ActPlane pin root; remove it manually if intended",
+            paths.root.display()
+        )));
+    }
+    std::fs::remove_dir_all(&paths.root).map_err(|e| {
+        err(format!(
+            "remove stale pin root {}: {e}; remove the pin root manually and restart",
+            paths.root.display()
+        ))
+    })
 }
 
 fn hash_map_from_fd<K: aya::Pod, V: aya::Pod>(fd: &OwnedFd) -> io::Result<HashMap<MapData, K, V>> {
@@ -1895,11 +1953,29 @@ impl PinnedEngine {
         let reserve = HookReserve::pinned_profile()?;
         validate_pinned_runtime(reserve, bpf_lsm_active())?;
         let policy_features = reserve.policy_features;
-        if pinned_engine_present(&paths, reserve)? {
-            return Ok(Self {
-                paths,
-                policy_features,
-            });
+        let root_exists = paths.root.try_exists()?;
+        let reinstall_reason = match pinned_engine_state(&paths, reserve)? {
+            PinnedEnginePresence::Present => {
+                return Ok(Self {
+                    paths,
+                    policy_features,
+                });
+            }
+            // A fresh install has nothing to clean.
+            PinnedEnginePresence::Absent if !root_exists => None,
+            PinnedEnginePresence::Absent => Some(format!(
+                "ActPlane pin root {} is incomplete",
+                paths.root.display()
+            )),
+            PinnedEnginePresence::Incompatible(reason) => Some(reason),
+        };
+        if let Some(reason) = reinstall_reason {
+            // Upgrades from an older patch stack leave a pin root the current
+            // binary can neither open nor reinstall over (BPF_OBJ_PIN
+            // EEXIST); clear it so the engine converges without a manual
+            // cleanup that would otherwise crash-loop the enforcer (#3445).
+            eprintln!("agentsight: {reason}; clearing the pin root and reinstalling");
+            remove_pinned_engine(&paths)?;
         }
 
         match Loader::load_with_pinned_layout(&empty_config_blob(), reserve, paths.clone()) {
@@ -4829,6 +4905,139 @@ os.execv({hit:?}, [{hit:?}])
         assert!(
             !pinned_engine_present(&paths, HookReserve::default()).expect("present"),
             "map check passed; still absent because no links exist"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An upgrade from an older patch stack leaves maps and links that the
+    /// current binary requires neither fully contains (new maps missing) nor
+    /// cleanly replaces: reinstalling over them would die on `BPF_OBJ_PIN`
+    /// EEXIST. The pin state must count such leftovers as reinstallable and
+    /// `remove_pinned_engine` must clear the whole root (#3445).
+    /// Plain fs-existence checks only — no root, no live BPF.
+    #[test]
+    fn stale_pin_root_is_cleared_before_reinstall() {
+        let root = std::env::temp_dir().join(format!("actplane-pin-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = PinnedEnginePaths::new(&root);
+        std::fs::create_dir_all(paths.maps_dir()).expect("maps dir");
+        std::fs::create_dir_all(paths.links_dir()).expect("links dir");
+
+        // What an older binary pinned: the pre-inode-guard map set, its own
+        // marker, and one hook link.
+        for name in [
+            "rb",
+            "cap_req",
+            "cap_task",
+            "cap_state",
+            "cap_policy",
+            "ts_counts",
+            "ts_proc",
+            "ts_proc_domains",
+            "ts_root",
+            "te_protected_pids",
+        ] {
+            std::fs::write(paths.map(name), b"").expect("old map pin");
+        }
+        const OLD_MARKER: &str =
+            "agentsight_profile_credential_exfiltration_v2_a62e5d9d96f91101cda019519053e950d532380a";
+        std::fs::write(paths.map(OLD_MARKER), b"").expect("old marker pin");
+        std::fs::write(paths.link("cap_drain_tick"), b"").expect("old link pin");
+
+        // Missing te_inode_guard / cap_pending_submitter: reinstallable.
+        assert_eq!(
+            pinned_engine_state(&paths, HookReserve::default()).expect("state"),
+            PinnedEnginePresence::Absent
+        );
+
+        remove_pinned_engine(&paths).expect("remove stale root");
+        assert!(!paths.root.try_exists().expect("root exists"));
+        // Idempotent: a concurrently cleaned root is not an error.
+        remove_pinned_engine(&paths).expect("remove absent root");
+
+        // A populated directory that is not a pin root must be refused even
+        // though the state check said Absent.
+        let foreign =
+            std::env::temp_dir().join(format!("actplane-pin-foreign-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&foreign);
+        std::fs::create_dir_all(&foreign).expect("foreign dir");
+        std::fs::write(foreign.join("payload.txt"), b"").expect("foreign payload");
+        let foreign_paths = PinnedEnginePaths::new(&foreign);
+        assert_eq!(
+            pinned_engine_state(&foreign_paths, HookReserve::default()).expect("state"),
+            PinnedEnginePresence::Absent
+        );
+        let err = remove_pinned_engine(&foreign_paths).expect_err("non-pin root must be refused");
+        assert!(
+            err.to_string().contains("not an ActPlane pin root"),
+            "expected refusal error, got: {err}"
+        );
+        assert!(foreign
+            .join("payload.txt")
+            .try_exists()
+            .expect("payload exists"));
+        // An empty directory is harmless to clear.
+        std::fs::remove_file(foreign.join("payload.txt")).expect("drop payload");
+        remove_pinned_engine(&foreign_paths).expect("remove empty root");
+        assert!(!foreign.try_exists().expect("foreign exists"));
+        let _ = std::fs::remove_dir_all(&foreign);
+    }
+
+    /// A pin root that has every required map but a foreign schema marker is
+    /// `Incompatible`: `pinned_engine_present` must still reject it loudly,
+    /// and the reinstall path must be able to clear it (#3445).
+    #[test]
+    fn incompatible_pin_root_is_cleared_before_reinstall() {
+        let root =
+            std::env::temp_dir().join(format!("actplane-pin-foreign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = PinnedEnginePaths::new(&root);
+        std::fs::create_dir_all(paths.maps_dir()).expect("maps dir");
+
+        for name in [
+            "rb",
+            "cap_req",
+            "cap_pending_submitter",
+            "cap_task",
+            "cap_state",
+            "cap_policy",
+            "ts_counts",
+            "ts_proc",
+            "ts_proc_domains",
+            "ts_root",
+            "te_protected_pids",
+            "te_inode_guard",
+        ] {
+            std::fs::write(paths.map(name), b"").expect("map pin");
+        }
+        const OLD_MARKER: &str =
+            "agentsight_profile_credential_exfiltration_v2_a62e5d9d96f91101cda019519053e950d532380a";
+        std::fs::write(paths.map(OLD_MARKER), b"").expect("old marker pin");
+
+        let state = pinned_engine_state(&paths, HookReserve::default()).expect("state");
+        match state {
+            PinnedEnginePresence::Incompatible(reason) => {
+                assert!(
+                    reason.contains("pinned metadata mismatch"),
+                    "expected mismatch reason, got: {reason}"
+                );
+            }
+            other => panic!("expected Incompatible, got {other:?}"),
+        }
+        let err = pinned_engine_present(&paths, HookReserve::default())
+            .expect_err("foreign pin must be rejected");
+        assert!(
+            err.to_string().contains("pinned metadata mismatch"),
+            "expected mismatch error, got: {err}"
+        );
+
+        remove_pinned_engine(&paths).expect("remove foreign root");
+        assert!(!paths.root.try_exists().expect("root exists"));
+        // After cleanup the reinstall sees a plain fresh install.
+        assert_eq!(
+            pinned_engine_state(&paths, HookReserve::default()).expect("state"),
+            PinnedEnginePresence::Absent
         );
 
         let _ = std::fs::remove_dir_all(&root);
