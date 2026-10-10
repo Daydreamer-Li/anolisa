@@ -28,7 +28,7 @@ ktuner why <param>             # e.g. ktuner why net.core.somaxconn
 # Undo changes (requires root)
 sudo ktuner rollback          # destructive + terminal (deletes the ledger)
 sudo ktuner rollback --list   # read-only preview of what rollback would restore
-sudo ktuner rollback <param>  # restore one recorded parameter, e.g. vm.dirty_bytes
+sudo ktuner rollback <param> [<param>…]  # restore the recorded parameters named, e.g. vm.dirty_bytes
 ```
 
 ## JSON output
@@ -240,7 +240,7 @@ value; persistence reproduces the cleared state.
 {"failed": 0, "restored": 5, "skipped": 0, "status": "Full"}
 ```
 
-### rollback <param> output
+### rollback <param>… output
 
 `sudo ktuner rollback <param>` restores just the recorded entry the parameter
 names and leaves the rest of the ledger in place. It accepts the same spellings
@@ -264,6 +264,31 @@ retried; a parameter the ledger does not record is a command error (`2`, stderr
 JSON), never a silent success. `status` classifies this attempt
 (`Full` / `Partial` / `Nothing`), not whether the ledger is now empty. Plain
 `ktuner rollback` and `ktuner rollback --list` are unchanged.
+
+Two or more parameters undo a multi-parameter tuning in one run: the whole batch
+happens under one ledger lock, and the persisted file is regenerated once from
+the entries that remain, not once per parameter. The body keeps the aggregate
+counters and replaces `param` (a string) with `params` (an array) — the ledger
+key each positional resolved to, in the order given and deduplicated, so
+`vm/swappiness` and `VM.SWAPPINESS` both report `vm.swappiness`:
+
+```json
+{"failed": 0, "params": ["vm.swappiness", "net.core.somaxconn"], "restored": 2, "skipped": 0, "status": "Full"}
+```
+
+The twin restored with an entry is counted in `restored` but not named, exactly
+as the single-parameter body does not name it, and naming both halves of a pair
+restores it once. A parameter whose write failed or whose path is gone is still
+named — the counters and `status` say whether the batch restored. A batch that
+restores only part of what it named retires the entries that landed, keeps the
+records of the ones that did not (with their twins), exits `1` and reports
+`Partial`; a batch where nothing lands touches neither the ledger nor the
+persisted file. One name the ledger does not record refuses the whole command
+before anything is written (`2`, stderr JSON), the same command error a single
+parameter gets: skipping the miss would let a typo drop the rest of the batch
+while the run still exited `0`. `rollback` with no parameter, `rollback --list`,
+and `rollback --list` combined with any parameter (still a usage error) are
+unchanged.
 
 ### rollback --list output
 

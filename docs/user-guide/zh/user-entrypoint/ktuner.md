@@ -68,10 +68,10 @@ sudo ktuner fix vm.swappiness --dry-run   # 预览单个参数，不做实际变
 # 解释某个参数为何应该改
 ktuner why net.core.somaxconn
 
-# 撤销 ktuner 做的所有改动，或单个已记录参数
+# 撤销 ktuner 做的所有改动，或点名的已记录参数
 sudo ktuner rollback          # 破坏性且终结：恢复并删除 ledger
 sudo ktuner rollback --list   # 只读预览回滚将恢复的内容
-sudo ktuner rollback vm.swappiness   # 回滚单个已记录参数
+sudo ktuner rollback vm.swappiness net.core.somaxconn   # 回滚点名的已记录参数
 ```
 
 `sudo ktuner fix <param> --dry-run` 以与 `tune --dry-run` 相同的形态预览这一次
@@ -88,6 +88,12 @@ sudo ktuner rollback vm.swappiness   # 回滚单个已记录参数
 `sudo ktuner rollback <param>` 对命中的账本条目遵循同一套契约——账本同时记录互斥孪生时
 两者一起恢复（写任一半都会把另一半清零）——并在 JSON 中以 `param` 回显该条目；
 账本里没有的参数是命令错误（`2`）。
+
+位置参数可以给多个，一次撤掉多参数调优：整批在同一把账本锁内完成，持久化文件按剩余账本
+只重新生成一次，两个参数之间不会留下写了一半的状态。输出保留聚合计数键，把 `param` 换成
+`params`——每个参数解析出的账本 key，按输入顺序去重。每个名字都适用与单个参数相同的契约；
+只恢复了一部分的批退役已落地的条目、保留其余以便重试并退出 `1`，而任一名字不在账本里就在
+动任何东西之前拒绝整条命令（`2`），与单参数版本同一条命令错误。
 
 `tune --exclude <param>`（可重复）把点名的建议移出计划：不写入、不进回滚账本、
 不持久化。排除在 `--category` 与 `--conservative` 过滤之后生效；被排除项在输出中

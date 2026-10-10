@@ -42,11 +42,11 @@ enum Commands {
     },
     /// Explain why a parameter should be changed
     Why { param: String },
-    /// Roll back all applied changes, or one recorded parameter
+    /// Roll back all applied changes, or one or more recorded parameters
     Rollback {
-        /// Restore only this recorded parameter, leaving the other entries
+        /// Restore only these recorded parameters, leaving the other entries
         /// in the ledger in place
-        param: Option<String>,
+        params: Vec<String>,
         /// Show what a rollback would restore, without changing anything
         #[arg(long)]
         list: bool,
@@ -94,7 +94,7 @@ fn main() {
         } => cmd_tune(dry_run, conservative, cat, exclude),
         Commands::Fix { param, dry_run } => cmd_fix(&param, dry_run),
         Commands::Why { param } => cmd_why(&param),
-        Commands::Rollback { param, list } => cmd_rollback(param.as_deref(), list),
+        Commands::Rollback { params, list } => cmd_rollback(&params, list),
     };
     match result {
         Ok(code) => std::process::exit(code),
@@ -805,16 +805,63 @@ fn rollback_output(param: Option<&str>, outcome: &tuner::RollbackOutcome) -> ser
     body
 }
 
-fn cmd_rollback(param: Option<&str>, list: bool) -> Result<i32> {
+/// JSON body for two or more positionals: the same four keys and the same
+/// status vocabulary, with `params` (an array) in place of `param` (a string).
+/// The two never appear together, and nothing here is added to a body of one
+/// or zero positionals.
+///
+/// `params` carries the ledger key each positional resolved to — the spelling
+/// `rollback --list` publishes — in the order given and deduplicated, so a
+/// caller can read back the batch it asked for. A mutually exclusive twin
+/// restored with an entry is counted in `restored` but not named here, exactly
+/// as the single-parameter body does not name it; whether the batch restored
+/// everything is `status`'s answer, not the array's.
+fn rollback_params_output(keys: &[String], outcome: &tuner::RollbackOutcome) -> serde_json::Value {
+    let mut body = rollback_output(None, outcome);
+    body["params"] = json!(keys);
+    body
+}
+
+/// JSON body of `ktuner rollback` for the positionals the caller named.
+///
+/// The shape follows the INVOCATION, not how many ledger keys it resolved to:
+/// exactly one positional keeps the body it has had since the positional was
+/// introduced (byte for byte), while two or more carry `params` even when they
+/// name one entry between them (`rollback vm/swappiness vm.swappiness`) —
+/// a consumer that asked for a batch reads the batch shape, and one rule
+/// covers every arity. No positional keeps the four-key full-rollback body.
+fn rollback_body(
+    positionals: usize,
+    keys: &[String],
+    outcome: &tuner::RollbackOutcome,
+) -> serde_json::Value {
+    match positionals {
+        0 => rollback_output(None, outcome),
+        1 => rollback_output(keys.first().map(String::as_str), outcome),
+        _ => rollback_params_output(keys, outcome),
+    }
+}
+
+/// The positional spellings `rollback` hands to the engine: every name goes
+/// through normalize_param, the policy fix/why share, so the spellings this
+/// command accepts cannot drift from those commands whichever position a name
+/// sits in.
+fn normalize_params(params: &[String]) -> Vec<String> {
+    params.iter().map(|param| normalize_param(param)).collect()
+}
+
+fn cmd_rollback(params: &[String], list: bool) -> Result<i32> {
     // `--list` keeps its read-only preview of the whole pending set, so the
-    // positional cannot be combined with it: refusing is a usage error (the
-    // README's stderr JSON, exit 2), while ignoring the parameter would
-    // silently answer a different question than the one asked. Checked before
-    // the root gate so it fails as an argument error, like the parser's own.
-    if list {
-        if let Some(param) = param {
-            anyhow::bail!("rollback --list takes no parameter (got {param})");
-        }
+    // positionals cannot be combined with it: refusing is a usage error (the
+    // README's stderr JSON, exit 2), while ignoring them would silently answer
+    // a different question than the one asked. Checked before the root gate so
+    // it fails as an argument error, like the parser's own. One positional
+    // keeps the message byte for byte; several name every argument given.
+    if list && !params.is_empty() {
+        anyhow::bail!(
+            "rollback --list takes no parameter (got {})",
+            params.join(" ")
+        );
     }
     let is_root = unsafe { libc::geteuid() } == 0;
     if !is_root {
@@ -830,15 +877,16 @@ fn cmd_rollback(param: Option<&str>, list: bool) -> Result<i32> {
         print_json(&output)?;
         return Ok(0);
     }
-    if let Some(param) = param {
-        // The CLI owns the alias policy (fix/why normalize the same way); the
-        // engine matches the normalized spelling against the ledger.
-        let (resolved, outcome) = tuner::rollback_param(&normalize_param(param))?;
-        print_json(&rollback_output(Some(&resolved), &outcome))?;
+    if params.is_empty() {
+        let outcome = tuner::rollback_quiet()?;
+        print_json(&rollback_body(0, &[], &outcome))?;
         return Ok(rollback_exit_code(&outcome));
     }
-    let outcome = tuner::rollback_quiet()?;
-    print_json(&rollback_output(None, &outcome))?;
+    // The CLI owns the alias policy (fix/why normalize the same way); the
+    // engine matches the normalized spellings against the ledger and answers
+    // with one ledger key per positional, in the order they were given.
+    let (keys, outcome) = tuner::rollback_params(&normalize_params(params))?;
+    print_json(&rollback_body(params.len(), &keys, &outcome))?;
     Ok(rollback_exit_code(&outcome))
 }
 
@@ -2365,5 +2413,184 @@ mod tests {
                 "a ledger key must normalize to itself: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn rollback_body_keeps_the_single_param_bytes() {
+        // One positional keeps the body it has had since the positional was
+        // introduced, byte for byte: the same four keys plus `param` naming
+        // the ledger entry that was addressed.
+        let twins = tuner::RollbackOutcome {
+            restored: 2,
+            failed: 0,
+            skipped: 0,
+        };
+        assert_eq!(
+            serde_json::to_string_pretty(&rollback_body(
+                1,
+                &["vm.dirty_bytes".to_string()],
+                &twins
+            ))
+            .unwrap(),
+            "{\n  \"failed\": 0,\n  \"param\": \"vm.dirty_bytes\",\n  \"restored\": 2,\n  \"skipped\": 0,\n  \"status\": \"Full\"\n}"
+        );
+        let skipped = tuner::RollbackOutcome {
+            restored: 0,
+            failed: 0,
+            skipped: 1,
+        };
+        assert_eq!(
+            serde_json::to_string_pretty(&rollback_body(1, &["vm.swappiness".to_string()], &skipped))
+                .unwrap(),
+            "{\n  \"failed\": 0,\n  \"param\": \"vm.swappiness\",\n  \"restored\": 0,\n  \"skipped\": 1,\n  \"status\": \"Nothing\"\n}"
+        );
+    }
+
+    #[test]
+    fn rollback_body_renders_the_multi_param_shape() {
+        // Two or more positionals replace `param` (string) with `params`
+        // (array) and keep the aggregate counters, so a consumer reads the
+        // same four keys whatever it asked for. The array is the ledger key
+        // of each positional, in the order given.
+        let outcome = tuner::RollbackOutcome {
+            restored: 3,
+            failed: 0,
+            skipped: 0,
+        };
+        let keys = vec![
+            "net.core.somaxconn".to_string(),
+            "vm.swappiness".to_string(),
+            "vm.vfs_cache_pressure".to_string(),
+        ];
+        let body = rollback_body(keys.len(), &keys, &outcome);
+        println!(
+            "multi-parameter rollback body:\n{}",
+            serde_json::to_string_pretty(&body).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string_pretty(&body).unwrap(),
+            "{\n  \"failed\": 0,\n  \"params\": [\n    \"net.core.somaxconn\",\n    \"vm.swappiness\",\n    \"vm.vfs_cache_pressure\"\n  ],\n  \"restored\": 3,\n  \"skipped\": 0,\n  \"status\": \"Full\"\n}"
+        );
+        assert!(
+            body.get("param").is_none(),
+            "`params` replaces `param`, the two never appear together: {body}"
+        );
+        // Only the shape changes: a partial batch reports the same status
+        // vocabulary and counts as the single-parameter form.
+        let partial = tuner::RollbackOutcome {
+            restored: 1,
+            failed: 1,
+            skipped: 1,
+        };
+        let body = rollback_body(
+            2,
+            &[
+                "vm.swappiness".to_string(),
+                "vm.vfs_cache_pressure".to_string(),
+            ],
+            &partial,
+        );
+        assert_eq!(
+            body,
+            json!({
+                "restored": 1,
+                "failed": 1,
+                "skipped": 1,
+                "status": "Partial",
+                "params": ["vm.swappiness", "vm.vfs_cache_pressure"],
+            })
+        );
+        assert!(body.get("param").is_none(), "{body}");
+        // The keys are the resolved ledger keys the engine returns: the shaper
+        // renders what it is given, in the order it is given.
+        assert_eq!(
+            rollback_body(
+                2,
+                &[
+                    "vm/swappiness".to_string(),
+                    "net.core.somaxconn".to_string()
+                ],
+                &outcome
+            )["params"],
+            json!(["vm/swappiness", "net.core.somaxconn"]),
+            "the shaper must not re-sort or re-spell the engine's keys"
+        );
+    }
+
+    #[test]
+    fn rollback_body_keeps_the_params_shape_after_dedup() {
+        // The shape follows the invocation, not how many ledger keys it
+        // resolved to: two positionals that turn out to name one entry still
+        // answer with `params` (one element), because a consumer that asked
+        // for a batch must be able to read the batch shape. `param` stays
+        // reserved for the single-positional body, byte for byte.
+        let outcome = tuner::RollbackOutcome {
+            restored: 1,
+            failed: 0,
+            skipped: 0,
+        };
+        for keys in [
+            vec!["vm.swappiness".to_string()],
+            vec!["vm.swappiness".to_string(), "vm.swappiness".to_string()],
+        ] {
+            let body = rollback_body(2, &keys, &outcome);
+            assert!(
+                body.get("param").is_none(),
+                "a two-positional invocation must not fall back to the single-parameter body: {body}"
+            );
+            assert_eq!(
+                body["params"].as_array().map(Vec::len),
+                Some(keys.len()),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            rollback_body(2, &["vm.swappiness".to_string()], &outcome),
+            json!({
+                "restored": 1,
+                "failed": 0,
+                "skipped": 0,
+                "status": "Full",
+                "params": ["vm.swappiness"],
+            })
+        );
+    }
+
+    #[test]
+    fn rollback_body_keeps_the_full_rollback_bytes() {
+        // No positional keeps the four-key body of a full rollback and gains
+        // no `param`/`params` key: the batch shape must not leak into it.
+        let full = tuner::RollbackOutcome {
+            restored: 5,
+            failed: 0,
+            skipped: 0,
+        };
+        assert_eq!(rollback_body(0, &[], &full), rollback_output(None, &full));
+        assert_eq!(
+            serde_json::to_string_pretty(&rollback_body(0, &[], &full)).unwrap(),
+            "{\n  \"failed\": 0,\n  \"restored\": 5,\n  \"skipped\": 0,\n  \"status\": \"Full\"\n}"
+        );
+    }
+
+    #[test]
+    fn rollback_normalizes_every_positional() {
+        // Every positional goes through normalize_param, the policy fix/why
+        // share, so the spellings this command accepts cannot drift from
+        // those commands whichever position a name sits in.
+        assert_eq!(
+            normalize_params(&[
+                "vm/swappiness".to_string(),
+                "VM.SWAPPINESS".to_string(),
+                "net/ipv4/conf/Br0.100/forwarding".to_string(),
+                "block/sda/scheduler".to_string(),
+            ]),
+            vec![
+                "vm.swappiness".to_string(),
+                "vm.swappiness".to_string(),
+                "net.ipv4.conf.Br0.100.forwarding".to_string(),
+                "block/sda/scheduler".to_string(),
+            ]
+        );
+        assert!(normalize_params(&[]).is_empty());
     }
 }

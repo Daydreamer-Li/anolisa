@@ -28,7 +28,7 @@ ktuner why <param>             # 例如 ktuner why net.core.somaxconn
 # 回滚变更（需要 root 权限）
 sudo ktuner rollback          # 破坏性且终结（删除 ledger）
 sudo ktuner rollback --list   # 只读预览回滚将恢复的内容
-sudo ktuner rollback <param>  # 回滚单个已记录参数，例如 vm.dirty_bytes
+sudo ktuner rollback <param> [<param>…]  # 回滚点名的已记录参数，例如 vm.dirty_bytes
 ```
 
 ## JSON 输出
@@ -223,7 +223,7 @@ sudo ktuner rollback <param>  # 回滚单个已记录参数，例如 vm.dirty_by
 {"failed": 0, "restored": 5, "skipped": 0, "status": "Full"}
 ```
 
-### rollback <param> 输出
+### rollback <param>… 输出
 
 `sudo ktuner rollback <param>` 只恢复该参数命中的账本条目，其余条目保留。参数拼写与
 `fix`、`why` 相同（点/斜杠别名、含字面点的网卡名）：
@@ -240,6 +240,23 @@ sudo ktuner rollback <param>  # 回滚单个已记录参数，例如 vm.dirty_by
 写入失败或路径缺失的条目连同其孪生一起保留，退出码 `1`，可重试；账本里没有的参数是命令
 错误（`2`，stderr JSON），绝不静默成功。`status` 描述本次尝试（`Full` / `Partial` /
 `Nothing`），不表示账本已清空。普通 `ktuner rollback` 与 `ktuner rollback --list` 行为不变。
+
+两个及以上参数把多参数调优一次撤掉：整批在同一把账本锁内完成，持久化文件按剩余账本只重新
+生成一次，而不是每个参数各生成一次。输出保留聚合计数键，把 `param`（字符串）换成 `params`
+（数组）——每个位置参数解析出的账本 key，按输入顺序去重（`vm/swappiness` 与
+`VM.SWAPPINESS` 都报 `vm.swappiness`）：
+
+```json
+{"failed": 0, "params": ["vm.swappiness", "net.core.somaxconn"], "restored": 2, "skipped": 0, "status": "Full"}
+```
+
+连同条目一起恢复的孪生计入 `restored` 但不出现在 `params` 里（与单参数版本不列出孪生一致），
+同时点名一对互斥孪生也只恢复一次。写入失败或路径缺失的参数照样出现在 `params` 里，能不能恢复
+由计数器和 `status` 表达。部分成功的批只退役落地的条目，未落地的连同其孪生保留记录，退出码
+`1`、`status` 为 `Partial`；一条都没落地时账本与持久化文件都不改动。任一名字不在账本里就在
+动任何东西之前拒绝整条命令（`2`，stderr JSON）——与单参数版本同一条命令错误：静默跳过会让拼错
+一个名字丢掉一整批回滚，而命令仍然退出 `0`。无参数的 `rollback`、`rollback --list`，以及
+`--list` 与任意位置参数同时出现（仍是用法错误）都不变。
 
 ### rollback --list 输出
 

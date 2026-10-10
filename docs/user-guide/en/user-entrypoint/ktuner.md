@@ -70,10 +70,10 @@ sudo ktuner fix vm.swappiness --dry-run   # preview one parameter, no changes
 # Explain why a parameter should change
 ktuner why net.core.somaxconn
 
-# Undo all changes ktuner made, or one recorded parameter
+# Undo all changes ktuner made, or the recorded parameters named
 sudo ktuner rollback          # destructive + terminal: restores and deletes the ledger
 sudo ktuner rollback --list   # read-only preview of what rollback would restore
-sudo ktuner rollback vm.swappiness   # restore one recorded parameter
+sudo ktuner rollback vm.swappiness net.core.somaxconn   # restore the recorded parameters named
 ```
 
 `sudo ktuner fix <param> --dry-run` previews that one write in the same shape
@@ -95,6 +95,16 @@ is a successful no-op (`0`); an unreadable or missing ledger is a command error 
 plus the mutually exclusive twin recorded with it, restored together because writing
 either knob zeroes the other — and reports that entry as `param` in its JSON; a
 parameter the ledger does not record is a command error (`2`).
+
+Several parameters are accepted and undone in one run: the whole batch happens under
+one ledger lock and the persisted file is regenerated once from the entries that
+remain, so two parameters cannot leave a half-written state between them. The body
+keeps the aggregate counters and replaces `param` with `params`, the ledger key each
+parameter resolved to in the order given and deduplicated. Each name is answered by
+the same contract as a single one; a batch that restores only part of what it named
+retires the entries that landed, keeps the rest for a retry and exits `1`, and one
+name the ledger does not record refuses the whole command before anything is written
+(`2`), the same command error a single parameter gets.
 
 `tune --exclude <param>` (repeatable) leaves a named recommendation out of the plan:
 nothing is written for it, nothing is recorded in the rollback ledger, and nothing is
