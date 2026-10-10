@@ -65,6 +65,7 @@ sudo ktuner tune --exclude vm.dirty_ratio   # apply all but this one
 
 # Fix a single parameter
 sudo ktuner fix vm.swappiness
+sudo ktuner fix vm.swappiness --dry-run   # preview one parameter, no changes
 
 # Explain why a parameter should change
 ktuner why net.core.somaxconn
@@ -74,6 +75,16 @@ sudo ktuner rollback          # destructive + terminal: restores and deletes the
 sudo ktuner rollback --list   # read-only preview of what rollback would restore
 sudo ktuner rollback vm.swappiness   # restore one recorded parameter
 ```
+
+`sudo ktuner fix <param> --dry-run` previews that one write in the same shape
+as `tune --dry-run` (`dry_run`, `status`, `blocked`, `would_apply`,
+`would_skip`) and exits `0` without writing anything, so a parameter can be
+inspected before it is changed. It needs no root, reports a mutually exclusive
+twin the kernel would zero in `would_clear` when the parameter has one, and
+refuses exactly like `sudo ktuner fix <param>` — same stderr JSON, same exit
+code — when the parameter is outside the plan, unwritable, or
+runtime-dangerous, so the preview cannot disagree with the command it
+previews.
 
 All output is JSON on stdout; errors are JSON on stderr. Exit codes: `0` success,
 `1` check found recommendations or rollback left values unrestored, `2` command error.

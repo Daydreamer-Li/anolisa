@@ -20,6 +20,7 @@ sudo ktuner tune --exclude vm.dirty_ratio   # apply all but this one
 
 # Fix a single parameter (requires root)
 sudo ktuner fix <param>        # e.g. sudo ktuner fix vm.swappiness
+sudo ktuner fix <param> --dry-run   # preview one parameter, no changes
 
 # Explain why a parameter should change
 ktuner why <param>             # e.g. ktuner why net.core.somaxconn
@@ -160,6 +161,78 @@ take (`skip_reason`: `unwritable` or `runtime_dangerous`; absent when the
 plan would write it), so the explanation never contradicts the plan. `check`
 publishes the same classification on its recommendations, so the diagnosis
 carries the reason without a dry run.
+
+### fix --dry-run output
+
+`ktuner fix <param> --dry-run` previews the one-parameter write in the same
+shape as `tune --dry-run`, scoped to that parameter: `dry_run`, `status`
+(`"planned"` here), `blocked`, `would_apply` (the one recommendation this
+write would land, in `check`'s per-entry shape) and `would_skip`. It writes
+nothing — no kernel write, no rollback record, no persistence, no ledger
+lock — and exits `0`:
+
+```json
+{
+  "blocked": 0,
+  "dry_run": true,
+  "status": "planned",
+  "would_apply": [
+    {
+      "category": "performance",
+      "confidence": "high",
+      "current": "1000",
+      "param": "net.core.netdev_max_backlog",
+      "reason": "万兆网卡场景下增大网卡收包队列深度，避免高流量时软中断处理不及导致丢包",
+      "recommended": "65536",
+      "subcategory": "network",
+      "writable": true
+    }
+  ],
+  "would_skip": []
+}
+```
+
+`would_skip` is always empty here: a single-parameter command answers every
+refusal through its own error channel — a parameter outside the plan
+(`parameter not found or already optimal: <param>`), an unwritable one, a
+runtime-dangerous one, or a non-root plain run — with exactly the stderr JSON
+and exit code `ktuner fix <param>` produces, so
+`ktuner fix <param> --dry-run && ktuner fix <param>` cannot be misled by a
+preview that disagrees with the command it previews. Like `tune --dry-run`,
+the preview needs no root; a plain `fix` still does.
+
+Writing one half of a mutually exclusive sysctl pair zeroes the other half in
+the kernel (`mm/page-writeback.c`, `mm/util.c`), and the preview names that
+twin in `would_clear`, taken from the same table the write path records from
+(the key is absent when the parameter has no twin):
+
+```json
+{
+  "blocked": 0,
+  "dry_run": true,
+  "status": "planned",
+  "would_apply": [
+    {
+      "category": "performance",
+      "confidence": "medium",
+      "current": "0",
+      "param": "vm.dirty_bytes",
+      "reason": "大内存服务器 (125 GB) 使用 dirty_ratio 百分比会导致脏页过多、IO 突刺，改用固定字节限制更平稳",
+      "recommended": "268435456",
+      "subcategory": "memory",
+      "writable": true
+    }
+  ],
+  "would_clear": [
+    "vm.dirty_ratio"
+  ],
+  "would_skip": []
+}
+```
+
+A real `fix` records the cleared twin's original in the ledger — so
+`rollback` restores it — only when the twin holds a configured (non-zero)
+value; persistence reproduces the cleared state.
 
 ### rollback output
 

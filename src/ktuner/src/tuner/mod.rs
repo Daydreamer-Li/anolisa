@@ -322,7 +322,12 @@ fn apply_recordable(rec: &Recommendation) -> Result<(Option<String>, WriteOutcom
 /// past") and the reason 33c0d669a dotted-normalized the runtime-dangerous
 /// guard. A slashed spelling that missed the table would clear the twin with
 /// no record of its original — the loss the table exists to prevent.
-fn cleared_sibling(param: &str) -> Option<&'static str> {
+///
+/// Public because the CLI's `fix --dry-run` preview reports the twin this
+/// write would clear (`would_clear`) from this one table: a second copy of
+/// the pair relationship could drift from the ledger's snapshot, and the
+/// preview would then name a different twin than the write records.
+pub fn cleared_sibling(param: &str) -> Option<&'static str> {
     match param.replace('/', ".").as_str() {
         "vm.dirty_bytes" => Some("vm.dirty_ratio"),
         "vm.dirty_ratio" => Some("vm.dirty_bytes"),

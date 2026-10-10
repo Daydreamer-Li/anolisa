@@ -34,7 +34,12 @@ enum Commands {
         exclude: Vec<String>,
     },
     /// Fix a single parameter
-    Fix { param: String },
+    Fix {
+        param: String,
+        /// Show what this fix would write, without changing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Explain why a parameter should be changed
     Why { param: String },
     /// Roll back all applied changes, or one recorded parameter
@@ -69,7 +74,7 @@ fn main() {
             // error shape (stderr JSON, exit 2) instead of exiting 0 on text
             // that never reached the consumer.
             if let Err(error) = write_stdout(&e.to_string()) {
-                let out = json!({ "error": format!("{error:#}") });
+                let out = error_body(&error);
                 print_error_json(&out);
                 std::process::exit(2);
             }
@@ -87,18 +92,25 @@ fn main() {
             category: cat,
             exclude,
         } => cmd_tune(dry_run, conservative, cat, exclude),
-        Commands::Fix { param } => cmd_fix(&param),
+        Commands::Fix { param, dry_run } => cmd_fix(&param, dry_run),
         Commands::Why { param } => cmd_why(&param),
         Commands::Rollback { param, list } => cmd_rollback(param.as_deref(), list),
     };
     match result {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            let out = json!({ "error": format!("{e:#}") });
+            let out = error_body(&e);
             print_error_json(&out);
             std::process::exit(2);
         }
     }
+}
+
+/// The stderr body a command error reports: `main` renders every command
+/// failure through here, so a caller — including the tests — can byte-compare
+/// what two failure modes would print.
+fn error_body(error: &anyhow::Error) -> serde_json::Value {
+    json!({ "error": format!("{error:#}") })
 }
 
 /// Print a command's JSON body, treating a closed stdout as a graceful stop
@@ -581,25 +593,62 @@ fn find_recommendation<'a>(
         .find(|r| param_matches(&r.param, param))
 }
 
-fn cmd_fix(param: &str) -> Result<i32> {
+fn cmd_fix(param: &str, dry_run: bool) -> Result<i32> {
     let is_root = unsafe { libc::geteuid() } == 0;
-    if !is_root {
+    // Mirrors cmd_tune: the read-only preview needs no root, while a real run
+    // keeps the gate exactly where it has always been — before any system
+    // read, so a failing diagnosis can never replace the root error.
+    fix_root_gate(param, dry_run, is_root)?;
+    let (_, eval) = gather()?;
+    fix_with(param, dry_run, is_root, &eval)
+}
+
+/// The root gate `fix` has always had: a real run needs root, the read-only
+/// preview does not. One expression, so the mode the gate applies to and its
+/// position (before any system read) cannot drift between the CLI entry point
+/// and the decision function the tests drive.
+fn fix_root_gate(param: &str, dry_run: bool, is_root: bool) -> Result<()> {
+    if !dry_run && !is_root {
         anyhow::bail!("fix requires root (sudo ktuner fix {param})");
     }
-    let (_, eval) = gather()?;
-    // Same alias policy as why_with: sysfs names are filesystem identities,
-    // while sysctl names accept slash/dot and case variants. Without this,
-    // `ktuner why vm/swappiness` succeeds but `ktuner fix vm/swappiness`
-    // reports "parameter not found".
-    let rec = find_recommendation(&eval, param)
+    Ok(())
+}
+
+/// The recommendation `fix` would write, or the refusal the command answers
+/// with. One classification for the real run and its `--dry-run` preview: the
+/// lookup accepts the same spellings both use, and the environment refusals
+/// come from the plan's own `skip_reason`, so the preview cannot disagree
+/// with the command it previews.
+fn fix_target<'a>(eval: &'a rules::EvalResult, param: &str) -> Result<&'a Recommendation> {
+    let rec = find_recommendation(eval, param)
         .ok_or_else(|| anyhow::anyhow!("parameter not found or already optimal: {param}"))?;
-    if !rec.writable {
-        anyhow::bail!("parameter {param} is read-only in this environment");
-    }
-    if category::is_runtime_dangerous(&rec.param) {
-        anyhow::bail!(
+    // The excludes are empty because a single fix has no --exclude, so only
+    // the two environment reasons can come back — unwritable outranks
+    // runtime-dangerous exactly as it does in the plan.
+    match skip_reason(rec, &[]) {
+        Some(UNWRITABLE) => anyhow::bail!("parameter {param} is read-only in this environment"),
+        Some(RUNTIME_DANGEROUS) => anyhow::bail!(
             "parameter {param} is dangerous to write at runtime, persist to /etc/sysctl.d instead"
-        );
+        ),
+        _ => Ok(rec),
+    }
+}
+
+/// `fix` over an already-gathered diagnosis: the shared classification, the
+/// preview rendering and the real write. `cmd_fix` supplies the live root
+/// fact and eval; a unit test drives both modes over one fixture and asserts
+/// they refuse identically.
+fn fix_with(param: &str, dry_run: bool, is_root: bool, eval: &rules::EvalResult) -> Result<i32> {
+    // cmd_fix ran the same gate before gathering (that position is the
+    // contract); stating it here keeps this function's verdict complete for
+    // its callers — the unit tests drive it without an euid of their own.
+    fix_root_gate(param, dry_run, is_root)?;
+    let rec = fix_target(eval, param)?;
+    if dry_run {
+        // Read-only: no write, no ledger lock, no record, no persistence and
+        // no cleanup — only the diagnosis above and the preview body.
+        print_json(&fix_dry_run_output(rec))?;
+        return Ok(0);
     }
     let fix = tuner::apply_one(rec)?;
     let (_, eval_after) = gather()?;
@@ -622,6 +671,31 @@ fn cmd_fix(param: &str) -> Result<i32> {
     }
     print_json(&output)?;
     Ok(0)
+}
+
+/// JSON body of `fix --dry-run` — the `tune --dry-run` shape scoped to one
+/// parameter, so one parser reads both previews. Printed only when the shared
+/// classification found a writable, runtime-safe recommendation: every
+/// refusal answers with the plain command's error instead (same stderr JSON,
+/// same exit code), so `status` is always `"planned"` and `would_skip` is
+/// always empty here. The keys stay because the shape is the contract.
+///
+/// A write that zeroes the kernel's mutually exclusive twin names it in
+/// `would_clear`, from the write path's own twin table ([`tuner::cleared_sibling`]):
+/// the preview must not derive the pair relationship a second time. The key
+/// is absent when the parameter has no twin.
+fn fix_dry_run_output(rec: &Recommendation) -> serde_json::Value {
+    let mut body = json!({
+        "dry_run": true,
+        "status": "planned",
+        "blocked": 0,
+        "would_apply": [rec_json(rec)],
+        "would_skip": [],
+    });
+    if let Some(twin) = tuner::cleared_sibling(&rec.param) {
+        body["would_clear"] = json!([twin]);
+    }
+    body
 }
 
 fn cmd_why(param: &str) -> Result<i32> {
@@ -1771,6 +1845,189 @@ mod tests {
         );
         // Unknown params resolve to nothing.
         assert!(find_recommendation(&eval, "no/such/param").is_none());
+    }
+
+    /// The stderr document a refusal would print, as the bytes `main` writes:
+    /// the command-error arm is the only path an Err takes, so equal
+    /// documents mean equal exit status (2) and equal stderr.
+    fn refusal_document(error: &anyhow::Error) -> String {
+        serde_json::to_string_pretty(&error_body(error)).unwrap()
+    }
+
+    #[test]
+    fn fix_dry_run_refuses_exactly_what_fix_refuses() {
+        // One classification, two modes: the preview answers every refusal
+        // with the plain command's own error — same text, same exit 2 — so
+        // `ktuner fix X --dry-run && ktuner fix X` cannot be misled by a
+        // preview that disagrees with the command it previews.
+        let eval = evaluation(vec![
+            rec("vm.swappiness", false),  // unwritable here
+            rec("vm.nr_hugepages", true), // writable, runtime-dangerous
+        ]);
+        for (param, expected) in [
+            (
+                "vm.swappiness",
+                "parameter vm.swappiness is read-only in this environment",
+            ),
+            (
+                "vm.nr_hugepages",
+                "parameter vm.nr_hugepages is dangerous to write at runtime, persist to /etc/sysctl.d instead",
+            ),
+            (
+                "no_such_ktuner_parameter",
+                "parameter not found or already optimal: no_such_ktuner_parameter",
+            ),
+            // Deny-listed by the write path and never in the plan (no built-in
+            // rule recommends one), so both modes refuse it the way the plain
+            // command always has: the lookup miss. The unconditional write
+            // choke point is unchanged.
+            (
+                "kernel.core_pattern",
+                "parameter not found or already optimal: kernel.core_pattern",
+            ),
+        ] {
+            // The real mode runs as root here (euid is the caller's fact in
+            // cmd_fix); the preview is not root-gated, so both modes reach the
+            // same classification.
+            let real = fix_with(param, false, true, &eval).expect_err("the real run must refuse");
+            let preview = fix_with(param, true, false, &eval).expect_err("the preview must refuse");
+            assert_eq!(
+                refusal_document(&real),
+                refusal_document(&preview),
+                "{param}: the preview must print the command's own error"
+            );
+            assert_eq!(
+                refusal_document(&preview),
+                format!("{{\n  \"error\": \"{expected}\"\n}}"),
+                "{param}"
+            );
+        }
+    }
+
+    #[test]
+    fn fix_root_gate_applies_to_the_real_run_only() {
+        // The two modes side by side: a non-root real run is stopped by the
+        // gate, while the same non-root preview reaches the parameter's own
+        // verdict — the flag is read-only, like `tune --dry-run`.
+        let eval = evaluation(vec![rec("vm.swappiness", false)]);
+        let root_error = "{\n  \"error\": \"fix requires root (sudo ktuner fix vm.swappiness)\"\n}";
+        let gate = fix_with("vm.swappiness", false, false, &eval)
+            .expect_err("a real fix must refuse without root");
+        assert_eq!(refusal_document(&gate), root_error);
+        let without_root = fix_with("vm.swappiness", true, false, &eval)
+            .expect_err("the preview must still refuse the unwritable parameter");
+        assert_eq!(
+            refusal_document(&without_root),
+            "{\n  \"error\": \"parameter vm.swappiness is read-only in this environment\"\n}",
+            "the preview must not stop at the root gate"
+        );
+        // And with root the same real call proceeds to the classification.
+        assert_eq!(
+            refusal_document(&fix_with("vm.swappiness", false, true, &eval).unwrap_err()),
+            "{\n  \"error\": \"parameter vm.swappiness is read-only in this environment\"\n}"
+        );
+    }
+
+    #[test]
+    fn fix_target_classifies_through_the_plans_skip_reason() {
+        // The plan and the single-parameter command share one classification:
+        // what tune drops with `unwritable` / `runtime_dangerous` is exactly
+        // what fix refuses, with the plan's own reason, so fix can never
+        // write an entry the plan skips.
+        let eval = evaluation(vec![
+            rec("vm.swappiness", false),
+            rec("vm.nr_hugepages", true),
+            rec("fs.file-max", true),
+        ]);
+        for (param, reason) in [
+            ("vm.swappiness", UNWRITABLE),
+            ("vm.nr_hugepages", RUNTIME_DANGEROUS),
+        ] {
+            let recommendation = find_recommendation(&eval, param).unwrap();
+            assert_eq!(skip_reason(recommendation, &[]), Some(reason), "{param}");
+            assert!(fix_target(&eval, param).is_err(), "{param}");
+        }
+        let writable = find_recommendation(&eval, "fs.file-max").unwrap();
+        assert_eq!(skip_reason(writable, &[]), None);
+        assert_eq!(
+            fix_target(&eval, "fs.file-max").unwrap().param,
+            "fs.file-max"
+        );
+    }
+
+    #[test]
+    fn fix_dry_run_accepts_the_same_spellings_as_fix() {
+        // The preview resolves the parameter through the same lookup fix and
+        // why use, so every alias they accept reaches the same recommendation
+        // and the entry names its canonical spelling; sysfs identities are
+        // filesystem names and stay verbatim.
+        let eval = evaluation(vec![rec("vm.swappiness", true)]);
+        for alias in ["vm.swappiness", "vm/swappiness", "VM.SWAPPINESS"] {
+            let target = fix_target(&eval, alias).expect("alias must resolve");
+            assert_eq!(target.param, "vm.swappiness");
+            assert_eq!(
+                fix_dry_run_output(target)["would_apply"][0]["param"],
+                json!("vm.swappiness"),
+                "{alias}"
+            );
+        }
+        let sysfs = evaluation(vec![rec("block/sda/scheduler", true)]);
+        assert!(fix_target(&sysfs, "block/sda/scheduler").is_ok());
+        assert!(
+            fix_target(&sysfs, "block.sda.scheduler").is_err(),
+            "sysfs names must not be dot-folded into a match"
+        );
+    }
+
+    #[test]
+    fn fix_dry_run_output_is_the_tune_preview_shape() {
+        // The body a one-parameter preview prints: the tune --dry-run keys,
+        // status "planned" with nothing blocked, and would_apply carrying the
+        // check entry itself (rec_json), so one parser reconciles the
+        // documents. would_skip stays present and empty — a refusal never
+        // reaches this shape, it answers with the command's error instead.
+        let recommendation = rec("vm.swappiness", true);
+        let body = fix_dry_run_output(&recommendation);
+        let keys: Vec<&str> = body
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["blocked", "dry_run", "status", "would_apply", "would_skip"]
+        );
+        assert_eq!(body["dry_run"], json!(true));
+        assert_eq!(body["status"], json!("planned"));
+        assert_eq!(body["blocked"], json!(0));
+        assert_eq!(body["would_skip"], json!([]));
+        assert_eq!(body["would_apply"], json!([rec_json(&recommendation)]));
+    }
+
+    #[test]
+    fn fix_dry_run_names_the_twin_the_write_clears() {
+        // The mutually exclusive pairs come from the write path's own table
+        // (tuner::cleared_sibling): the preview must name the half a write
+        // would zero — a second copy of the relationship could drift from
+        // what the ledger records — and a parameter without a twin carries
+        // no key at all.
+        for (param, twin) in [
+            ("vm.dirty_bytes", "vm.dirty_ratio"),
+            ("vm.dirty_ratio", "vm.dirty_bytes"),
+            ("vm.dirty_background_bytes", "vm.dirty_background_ratio"),
+            ("vm.dirty_background_ratio", "vm.dirty_background_bytes"),
+            ("vm.overcommit_kbytes", "vm.overcommit_ratio"),
+            ("vm.overcommit_ratio", "vm.overcommit_kbytes"),
+        ] {
+            let body = fix_dry_run_output(&rec(param, true));
+            assert_eq!(body["would_clear"], json!([twin]), "{param}");
+        }
+        let body = fix_dry_run_output(&rec("vm.swappiness", true));
+        assert!(
+            body.get("would_clear").is_none(),
+            "a parameter without a twin must not grow the key: {body}"
+        );
     }
 
     #[test]

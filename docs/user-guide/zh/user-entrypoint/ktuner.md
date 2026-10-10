@@ -63,6 +63,7 @@ sudo ktuner tune --exclude vm.dirty_ratio   # 应用其余全部、跳过这一�
 
 # 修复单个参数
 sudo ktuner fix vm.swappiness
+sudo ktuner fix vm.swappiness --dry-run   # 预览单个参数，不做实际变更
 
 # 解释某个参数为何应该改
 ktuner why net.core.somaxconn
@@ -72,6 +73,13 @@ sudo ktuner rollback          # 破坏性且终结：恢复并删除 ledger
 sudo ktuner rollback --list   # 只读预览回滚将恢复的内容
 sudo ktuner rollback vm.swappiness   # 回滚单个已记录参数
 ```
+
+`sudo ktuner fix <param> --dry-run` 以与 `tune --dry-run` 相同的形态预览这一次
+单参数写入（`dry_run`、`status`、`blocked`、`would_apply`、`would_skip`），
+不写入任何东西并以 `0` 退出，便于改参数前先看清结果。它不需要 root；参数有会被
+内核清零的互斥孪生时在 `would_clear` 中列出；参数不在计划里、不可写或运行时危险时，
+与 `sudo ktuner fix <param>` 给出完全相同的 stderr JSON 与退出码，因此预检不会
+与被预览的命令不一致。
 
 所有输出为 stdout 上的 JSON，错误为 stderr 上的 JSON。退出码：`0` 成功、
 `1` check 发现可改进项或 rollback 仍有值未恢复、`2` 命令错误。

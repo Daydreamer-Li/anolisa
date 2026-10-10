@@ -20,6 +20,7 @@ sudo ktuner tune --exclude vm.dirty_ratio   # 应用其余全部、跳过这一�
 
 # 修正单个参数（需要 root 权限）
 sudo ktuner fix <param>        # 例如 sudo ktuner fix vm.swappiness
+sudo ktuner fix <param> --dry-run   # 预览单个参数，不做实际变更
 
 # 解释某个参数为何需要修改
 ktuner why <param>             # 例如 ktuner why net.core.somaxconn
@@ -147,6 +148,74 @@ sudo ktuner rollback <param>  # 回滚单个已记录参数，例如 vm.dirty_by
 （`skip_reason`：`unwritable` 或 `runtime_dangerous`；计划会写入的项无此
 字段），使解释输出与计划不矛盾。`check` 的推荐项也发布同一分类，
 使诊断输出无需 dry run 就携带该原因。
+
+### fix --dry-run 输出
+
+`ktuner fix <param> --dry-run` 以与 `tune --dry-run` 相同的形态预览这一次
+单参数写入（范围就是该参数）：`dry_run`、`status`（此处为 `"planned"`）、
+`blocked`、`would_apply`（本次写入会落地的那一条建议，与 `check` 的条目同形）
+以及 `would_skip`。它不写任何东西——不写内核、不进回滚账本、不持久化、
+不加账本锁——并以 `0` 退出：
+
+```json
+{
+  "blocked": 0,
+  "dry_run": true,
+  "status": "planned",
+  "would_apply": [
+    {
+      "category": "performance",
+      "confidence": "high",
+      "current": "1000",
+      "param": "net.core.netdev_max_backlog",
+      "reason": "万兆网卡场景下增大网卡收包队列深度，避免高流量时软中断处理不及导致丢包",
+      "recommended": "65536",
+      "subcategory": "network",
+      "writable": true
+    }
+  ],
+  "would_skip": []
+}
+```
+
+`would_skip` 在本命令里恒为空：单参数命令的所有拒绝情形都走命令自身的错误
+通道——参数不在计划里（`parameter not found or already optimal: <param>`）、
+不可写、运行时危险，或非 root 的真实运行——其 stderr JSON 与退出码与
+`ktuner fix <param>` 完全一致，因此
+`ktuner fix <param> --dry-run && ktuner fix <param>` 的预检不会被与被预览
+命令不一致的预览误导。与 `tune --dry-run` 一样，预览不需要 root；真实
+`fix` 仍需要。
+
+写入互斥 sysctl 对的一半时，内核会把另一半清零（`mm/page-writeback.c`、
+`mm/util.c`），预览用 `would_clear` 列出这一孪生，取值来自写入路径记账时
+用的同一张表（参数没有孪生时不出现该键）：
+
+```json
+{
+  "blocked": 0,
+  "dry_run": true,
+  "status": "planned",
+  "would_apply": [
+    {
+      "category": "performance",
+      "confidence": "medium",
+      "current": "0",
+      "param": "vm.dirty_bytes",
+      "reason": "大内存服务器 (125 GB) 使用 dirty_ratio 百分比会导致脏页过多、IO 突刺，改用固定字节限制更平稳",
+      "recommended": "268435456",
+      "subcategory": "memory",
+      "writable": true
+    }
+  ],
+  "would_clear": [
+    "vm.dirty_ratio"
+  ],
+  "would_skip": []
+}
+```
+
+真实 `fix` 运行时，只有孪生持有已配置的（非零）原值，才会把被清零的原值
+记入账本（`rollback` 因此能恢复）；持久化重现清零后的状态。
 
 ### rollback 输出
 
