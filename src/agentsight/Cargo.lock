@@ -375,6 +375,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsight-rewrite"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ctrlc",
+ "libc",
+ "log 0.4.33",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "agentsight-sqlite-lifecycle"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,16 @@
+[package]
+name = "agentsight-rewrite"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone ptrace-based LLM traffic rewrite engine (independent-process deployment)"
+
+[dependencies]
+anyhow = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true, features = ["std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ctrlc = { workspace = true }

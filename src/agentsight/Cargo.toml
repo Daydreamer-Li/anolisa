@@ -10,6 +10,7 @@ members = [
     "crates/agentsight-opt-store",
     "crates/agentsight-sqlite-lifecycle",
     "crates/agentsight-trajectory-collector",
+    "crates/agentsight-rewrite",
     "crates/enforcement-protocol",
     "crates/ebpf-ifc-engine",
 ]
