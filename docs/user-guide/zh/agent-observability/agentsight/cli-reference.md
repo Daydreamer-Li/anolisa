@@ -77,9 +77,9 @@ agentsight trace --no-ebpf
 ### 无特权运行（`--no-ebpf`）
 
 加载探针需要 root 或 `CAP_BPF`/`CAP_PERFMON`。没有这些权限时，`trace` 会在探针初始化阶段停下并
-报出 `Failed to create probes`。`--no-ebpf` 跳过探针，仅运行纯用户态的轨迹采集器：扫描本地 Agent
-会话文件（Claude Code、Qoder、QoderWork、Codex），转换为 ATIF v1.7 并存入 `trajectories.db`，供
-`serve` 展示。
+报出 `Failed to create probes`。`--no-ebpf` 跳过探针，仅运行纯用户态的轨迹采集器：扫描本地 JSONL
+会话（Claude Code、Qoder、QoderWork、Codex）和 Hermes `state.db`，转换为 ATIF v1.7 并存入
+`trajectories.db`，供 `serve` 展示。
 
 此模式**不提供**的能力：Token 计量、审计事件、中断检测以及进程与 TLS 流量监控均来自探针，因此
 `agentsight token`、`audit`、`metrics`、`interruption` 查不到新数据。
@@ -92,10 +92,11 @@ agentsight trace --no-ebpf
   启动时会打印实际路径和对应的 `serve --db` 命令；发生回退时需把该路径传给 `serve`。回退目录与
   数据库按仅属主权限（`0700`/`0600`）创建，因为轨迹内含完整对话内容。
 
-JSONL 默认扫描 `/root` 和 `/home/*`，并识别 AgentSight 进程继承的 `CLAUDE_CONFIG_DIR`。
-设置 `scan_dirs` 会覆盖这些默认位置。配置项可指向会话根目录或包含多个会话工作区的上层目录；嵌套发现
-最多向下四级、每个根目录最多检查 4096 个目录，且不跟随目录符号链接。若 SDK options 只给 CLI
-子进程设置了非标准配置目录，需向 AgentSight 进程设置相同的 `CLAUDE_CONFIG_DIR`，并留空 `scan_dirs`。
+JSONL 默认扫描 `/root` 和 `/home/*`，并识别 AgentSight 进程继承的 `CLAUDE_CONFIG_DIR`；Hermes
+检查 `$HERMES_HOME/state.db` 和 `~/.hermes/state.db`。设置 `scan_dirs` 会覆盖这些默认位置；配置项
+可指向会话根目录、Hermes home/数据库或包含多个会话工作区的上层目录。嵌套 Claude 发现最多向下四级、
+每个根目录最多检查 4096 个目录，且不跟随目录符号链接。若 SDK options 只给 CLI 子进程设置了非标准
+配置目录，需向 AgentSight 进程设置相同的 `CLAUDE_CONFIG_DIR`，并留空 `scan_dirs`。
 
 ## agentsight serve
 

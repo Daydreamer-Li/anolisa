@@ -34,6 +34,30 @@ Anything else works too — add a rule, as described in
 - **Codex CLI** statically links its TLS library, so AgentSight falls back to byte-pattern matching
   and a per-version offset table. A brand-new Codex release may need a refreshed entry in
   `codex_offsets`.
+- **Hermes** trajectories are also available without eBPF. The trajectory collector opens
+  `$HERMES_HOME/state.db` read-only, converts active messages, reasoning, tool calls, tool results,
+  and session Token totals to ATIF v1.7, and follows committed SQLite WAL updates. When `scan_dirs`
+  is set, include either the Hermes home directory or the `state.db` path explicitly.
+  Malformed session rows or messages are logged and skipped per session; healthy sessions continue.
+  Unchanged sessions are checked using metadata only, without loading their stored ATIF content.
+  Their per-session fingerprints are stored separately from trajectory payloads, so capacity eviction
+  does not cause unchanged sessions to be reingested. New source messages still trigger collection.
+  Payload and scan state are saved atomically; state expires with source-message age under the
+  configured retention policy or when the source database disappears.
+
+Hermes allows caller-defined session IDs. To keep multiple databases independent, the collector
+uses a stable `hermes:<SHA256>` ID derived from the canonical database path and original session ID.
+The database row and ATIF `session_id` agree. Use this collected ID for trajectory APIs; the original
+ID is retained in `extra.hermes_session_id` for Hermes API and external correlation. Parent references
+use the same namespace, with the original parent in `extra.hermes_parent_session_id`. These IDs are
+not automatically joined to eBPF sessions that use the original ID. The database path itself is not
+embedded in the exported ID or extra metadata.
+
+Keep each source database mounted at a stable path across collector restarts. Path aliases pointing
+to the same canonical location share one identity; moving a database to a different canonical path
+or mounting a copy elsewhere creates a separate collected identity. Earlier preview builds stored
+raw Hermes IDs: use a fresh output database when comparing previews, or expect old raw-ID rows to
+coexist until retention cleanup. Source Hermes databases are never modified by this transition.
 
 ## Tokenless: Token savings
 

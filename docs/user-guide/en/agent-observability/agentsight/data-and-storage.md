@@ -49,6 +49,14 @@ subsequent calls.
 
 ## Retention and size limits
 
+`trajectories.db` keeps Hermes scan fingerprints in `source_session_states`, keyed by collected
+session ID, source and canonical database path. This metadata survives payload eviction and collector
+restarts; unchanged sessions stay evicted until the source changes. The table is created and seeded
+from existing Hermes trajectory metadata on writable open, without reading ATIF payloads. Maintenance
+removes state when its source-message timestamp expires or its source file disappears. With age
+retention disabled, state remains while its source database exists. No JSON config version change
+or source Hermes database modification is required.
+
 When an SSE call exceeds a capture byte limit or is evicted for connection capacity, AgentSight
 reports bounded metadata with `incomplete=true`, `metadata_only=true` and `abandon_reason`,
 without bodies, messages or token usage; byte-limit removal also sets `truncated=true`. Capacity
@@ -72,7 +80,7 @@ Schema v4 gives every AgentSight-owned database a `retention_days`, `max_db_size
 | `agentsight.db` | 30 days, 500 MiB, every 60 seconds | Full: audit, Token, HTTP, and consumption history | `storage.primary` |
 | `genai_events.db` | 30 days, 200 MiB, every 60 seconds | Full: GenAI events, resource samples, and evaluation runs share this physical target | `storage.genai` |
 | `interruption_events.db` | 30 days, 100 MiB, every 60 seconds | Full interruption history | `storage.interruptions` |
-| `trajectories.db` | 30 days, 500 MiB, every 300 seconds | Partial: trajectory rows are pruned while recent skipped-file fingerprints remain protected | `storage.trajectories` |
+| `trajectories.db` | 30 days, 500 MiB, every 300 seconds | Partial: trajectory payloads are pruned while recent file and Hermes session fingerprints remain protected | `storage.trajectories` |
 | `optimization.db` | 30 days, 200 MiB, every 300 seconds | Full optimization-result history | `storage.optimization` |
 | `.agentsight-private/security.db` | 30 days, 200 MiB, every 3,600 seconds | Partial: terminal graphs and unreferenced events are pruned; active case graphs remain protected | `storage.security_audit` |
 | `.agentsight-private/reuse.db` | 30 days, 200 MiB, every 300 seconds | Partial: old label events and unconfirmed, purely automatic labels only | `storage.reuse` |

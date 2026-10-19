@@ -141,7 +141,7 @@ instantiated at all, so it costs no memory and no I/O.
 | Audit | `features.audit` | `true` | Persists LLM calls and process actions |
 | Token consumption records | `features.token_consumption` | `false` | Extra aggregated consumption records |
 | External log export | `features.sls_logtail` | `false` | Writes structured events to a log file for an external collector |
-| Trajectory collection | `features.trajectory_collection.enabled` | `false` | Periodically scans local Agent JSONL sessions into `trajectories.db` (trace mode only) |
+| Trajectory collection | `features.trajectory_collection.enabled` | `false` | Periodically scans local Agent JSONL sessions and Hermes `state.db` into `trajectories.db` (trace mode only) |
 | Reuse LLM judge | `features.reuse_llm_judge` | `false` | Allows `POST /api/reuse/judge` to ask the configured LLM to label trajectories the rules cannot place; every call is billed |
 
 `reuse_llm_judge` affects only `POST /api/reuse/judge`. Leave it disabled unless you have configured an optimization LLM and explicitly want paid second-level labelling. Reload the service after changing it so the server reads the new setting.
@@ -154,8 +154,8 @@ Tuning knobs that come with a feature:
 | `features.session_mapping.max_entries` | `10000` | Bound of the response-ID → session-ID map |
 | `features.sqlite_storage.batch.max_size` | `100` | Rows per write batch |
 | `features.sqlite_storage.batch.flush_ms` | `100` | Maximum batch delay in milliseconds |
-| `features.trajectory_collection.scan_interval_secs` | `30` | Scan interval for discovering trajectory files; storage cleanup uses `storage.trajectories.check_interval_secs` |
-| `features.trajectory_collection.scan_dirs` | unset | Overrides default roots and `CLAUDE_CONFIG_DIR`. Each path may be a session root or a workspace containing `.claude/projects` within four levels |
+| `features.trajectory_collection.scan_interval_secs` | `30` | Scan interval for discovering JSONL sessions and Hermes SQLite trajectories; storage cleanup uses `storage.trajectories.check_interval_secs` |
+| `features.trajectory_collection.scan_dirs` | unset | Overrides default roots and environment paths. Each path may be a session root, Hermes home/database, or a workspace containing `.claude/projects` within four levels |
 
 ## Runtime limits
 

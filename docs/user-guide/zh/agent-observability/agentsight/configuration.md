@@ -134,7 +134,7 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
 | 审计 | `features.audit` | `true` | 持久化 LLM 调用与进程动作 |
 | Token 消费记录 | `features.token_consumption` | `false` | 额外的聚合消费记录 |
 | 外部日志导出 | `features.sls_logtail` | `false` | 把结构化事件写入文件，供外部采集器读取 |
-| 轨迹采集 | `features.trajectory_collection.enabled` | `false` | 周期扫描本地 Agent JSONL 会话写入 `trajectories.db`（仅 trace 模式） |
+| 轨迹采集 | `features.trajectory_collection.enabled` | `false` | 周期扫描本地 Agent JSONL 会话和 Hermes `state.db` 写入 `trajectories.db`（仅 trace 模式） |
 | 轨迹 LLM 判定 | `features.reuse_llm_judge` | `false` | 允许 `POST /api/reuse/judge` 调用已配置的 LLM 判定规则无法归类的轨迹；每次调用都会产生费用 |
 
 `reuse_llm_judge` 只影响 `POST /api/reuse/judge`。除非已经配置优化 LLM 且明确需要付费的二级判定，否则请保持关闭。修改后 reload 服务，让 server 读取新配置。
@@ -147,8 +147,8 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
 | `features.session_mapping.max_entries` | `10000` | response ID → session ID 映射上限 |
 | `features.sqlite_storage.batch.max_size` | `100` | 每批写入行数 |
 | `features.sqlite_storage.batch.flush_ms` | `100` | 批量写入的最大延迟（毫秒） |
-| `features.trajectory_collection.scan_interval_secs` | `30` | 轨迹文件发现间隔；存储清理由 `storage.trajectories.check_interval_secs` 控制 |
-| `features.trajectory_collection.scan_dirs` | 未设置 | 覆盖默认位置及 `CLAUDE_CONFIG_DIR`；每项可指向会话根目录或四级内含 `.claude/projects` 的工作区上层目录 |
+| `features.trajectory_collection.scan_interval_secs` | `30` | JSONL 与 Hermes SQLite 轨迹发现间隔；存储清理由 `storage.trajectories.check_interval_secs` 控制 |
+| `features.trajectory_collection.scan_dirs` | 未设置 | 覆盖默认位置及环境变量路径；每项可指向会话根目录、Hermes home/数据库或四级内含 `.claude/projects` 的工作区上层目录 |
 
 ## 运行时上限
 

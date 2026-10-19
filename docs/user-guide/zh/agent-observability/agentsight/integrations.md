@@ -31,6 +31,22 @@ AgentSight 观测 Agent 时不需要被嵌进 Agent 里；同样，当机器上�
   确实连上了 gateway。
 - **Codex CLI** 静态链接 TLS 库，AgentSight 会退化到字节模式匹配加逐版本 offset 表。刚发布的 Codex
   版本可能需要更新 `codex_offsets` 条目。
+- **Hermes** 无需 eBPF 也能采集轨迹。轨迹采集器以只读方式打开 `$HERMES_HOME/state.db`，把有效消息、
+  推理内容、工具调用、工具结果和会话 Token 汇总转换为 ATIF v1.7，并持续读取 SQLite WAL 中已提交的
+  更新。设置 `scan_dirs` 后，需显式包含 Hermes home 目录或 `state.db` 路径。
+  坏会话记录或坏消息按会话记录错误并跳过，其他健康会话继续采集；未变更会话仅查询元数据，不读取已存储的 ATIF 正文。
+  会话指纹独立于轨迹正文保存，因此容量裁剪后不会重新入库未变化的会话；源新增消息仍触发更新。
+  正文和扫描状态在同一事务内保存；扫描状态按源消息时间执行保留期清理，源数据库消失后也会清理。
+
+Hermes 允许调用方自定义会话 ID。为隔离多个数据库，采集器使用由规范化后的数据库路径和原会话 ID
+生成的稳定 `hermes:<SHA256>` 标识，数据库记录与 ATIF 的 `session_id` 保持一致。
+轨迹 API 使用该采集标识；原始 ID 保存在 `extra.hermes_session_id`，供 Hermes API 和外部关联使用。
+父会话引用使用同一命名空间，原父 ID 保存在 `extra.hermes_parent_session_id`。
+这些采集标识不会自动与使用原始 ID 的 eBPF 会话合并。导出的标识和 extra 元数据不嵌入数据库本地路径。
+
+采集器重启时应保持源库挂载路径稳定：指向相同规范化路径的别名共用一个身份；移动源库或将其副本
+挂载到另一规范化路径会生成独立的采集身份。早期测试二进制使用原始 Hermes ID：对比不同测试版本时
+建议使用新的输出数据库，否则旧 ID 记录会与新记录共存，直到保留期清理。该切换不会修改源 Hermes 库。
 
 ## Tokenless：Token 节省
 

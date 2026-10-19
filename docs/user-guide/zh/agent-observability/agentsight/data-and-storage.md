@@ -41,6 +41,12 @@ SQLite 为唯一活跃输出时会立即保存已经完成的调用。默认 Log
 
 ## 保留与容量上限
 
+`trajectories.db` 通过 `source_session_states` 保存 Hermes 扫描指纹，按采集会话 ID、来源和
+规范化数据库路径区分。该元数据在正文容量淘汰和采集器重启后仍保留，未变化的会话保持被淘汰状态，
+直到源发生变化。可写打开旧库时自动建表，并从已有 Hermes 轨迹元数据补齐状态，不读取 ATIF 正文。
+维护时清理源消息时间已过保留期或源文件已消失的状态；关闭按时间保留限制时，源库存在则保留状态。
+不需要改变 JSON 配置版本，也不会修改源 Hermes 数据库。
+
 SSE 调用超过采集字节上限或因连接容量被驱逐时，AgentSight 仅输出有界元数据，标记
 `incomplete=true`、`metadata_only=true` 和 `abandon_reason`，不保留正文、消息或 token 用量；
 字节超限还设置 `truncated=true`。容量驱逐跳过最近 5 秒活跃的在途调用，包括请求组装和等待响应阶段；
@@ -61,7 +67,7 @@ schema v4 为每个 AgentSight 自有数据库统一配置 `retention_days`、`m
 | `agentsight.db` | 30 天、500 MiB、每 60 秒 | 完整：审计、Token、HTTP 与消费历史 | `storage.primary` |
 | `genai_events.db` | 30 天、200 MiB、每 60 秒 | 完整：GenAI 事件、资源采样与 evaluation run 共用这个物理库 | `storage.genai` |
 | `interruption_events.db` | 30 天、100 MiB、每 60 秒 | 完整的中断历史 | `storage.interruptions` |
-| `trajectories.db` | 30 天、500 MiB、每 300 秒 | 部分：清理轨迹行，但保护近期跳过文件的指纹 | `storage.trajectories` |
+| `trajectories.db` | 30 天、500 MiB、每 300 秒 | 部分：清理轨迹正文，但保护近期文件和 Hermes 会话的指纹 | `storage.trajectories` |
 | `optimization.db` | 30 天、200 MiB、每 300 秒 | 完整的优化结果历史 | `storage.optimization` |
 | `.agentsight-private/security.db` | 30 天、200 MiB、每 3,600 秒 | 部分：清理终态案例图和无引用事件，保护活动案例图 | `storage.security_audit` |
 | `.agentsight-private/reuse.db` | 30 天、200 MiB、每 300 秒 | 部分：仅旧标签事件与未确认的纯自动标签 | `storage.reuse` |

@@ -81,9 +81,9 @@ agentsight trace --no-ebpf
 
 Loading the probes requires root or `CAP_BPF`/`CAP_PERFMON`. Without them `trace` stops at probe
 setup and reports `Failed to create probes`. `--no-ebpf` skips the probes and runs only the
-trajectory collector, which is pure user-space: it scans local Agent session files (Claude Code,
-Qoder, QoderWork, Codex), converts them to ATIF v1.7, and stores them in `trajectories.db` for
-`serve` to display.
+trajectory collector, which is pure user-space: it scans local JSONL sessions (Claude Code, Qoder,
+QoderWork, Codex) and Hermes `state.db`, converts them to ATIF v1.7, and stores them in
+`trajectories.db` for `serve` to display.
 
 What this mode does **not** provide: token metering, audit events, interruption detection, and
 process or TLS traffic monitoring all come from the probes, so `agentsight token`, `audit`,
@@ -101,11 +101,12 @@ Two behaviours to keep in mind:
   content.
 
 JSONL discovery scans `/root` and `/home/*` by default and also honors an inherited
-`CLAUDE_CONFIG_DIR`. If `scan_dirs` is set, it overrides these defaults. A configured path may be a
-session root or a workspace containing per-session `.claude/projects` trees. Nested discovery
-checks up to four directory levels with a 4096-directory budget and does not follow directory
-symlinks. When SDK options set a non-standard subprocess-only config directory, expose the same
-`CLAUDE_CONFIG_DIR` to the AgentSight process and leave `scan_dirs` unset.
+`CLAUDE_CONFIG_DIR`. Hermes discovery checks `$HERMES_HOME/state.db` and `~/.hermes/state.db`.
+If `scan_dirs` is set, it overrides these defaults. A configured path may be a session root, a
+Hermes home/database, or a workspace containing per-session `.claude/projects` trees. Nested
+Claude discovery checks up to four directory levels with a 4096-directory budget and does not
+follow directory symlinks. When SDK options set a non-standard subprocess-only config directory,
+expose the same `CLAUDE_CONFIG_DIR` to the AgentSight process and leave `scan_dirs` unset.
 
 ## agentsight serve
 
