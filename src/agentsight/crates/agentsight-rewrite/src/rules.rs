@@ -86,6 +86,48 @@ impl RuleSet {
             .map(|r| r.replace.as_bytes().to_vec())
     }
 
+    /// Compute in-place patches for the payload: byte offsets and equal-length
+    /// replacement bytes. Returns `None` when no rule matches. This is the
+    /// preferred rewrite mode on real runtimes: patching the matched substring
+    /// at its actual position keeps the surrounding bytes (HTTP request line,
+    /// headers, JSON structure) and the Content-Length framing intact, and
+    /// needs no remote allocation.
+    pub fn patches_in_place(&self, payload: &[u8]) -> Option<Vec<(usize, Vec<u8>)>> {
+        if self.mode != Mode::Enforce {
+            return None;
+        }
+        let text = std::str::from_utf8(payload).ok()?;
+        let mut out = Vec::new();
+        for r in &self.rules {
+            let needle: &str = match (r.match_contains.as_deref(), r.match_equals.as_deref()) {
+                (Some(n), _) => n,
+                (None, Some(e)) => e,
+                _ => continue,
+            };
+            let repl = r.replace.as_bytes();
+            let mut from = 0usize;
+            while let Some(pos) = text[from..].find(needle) {
+                let at = from + pos;
+                if repl.len() != needle.len() {
+                    // Unequal length cannot be patched in place without
+                    // breaking framing; skip to the next rule (the caller's
+                    // remote-buffer mode handles variable length).
+                    break;
+                }
+                out.push((at, repl.to_vec()));
+                from = at + needle.len();
+            }
+            if !out.is_empty() {
+                break; // first matching rule wins, consistent with `apply`
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
     /// Whether a payload would match in Enforce mode (used for Advise logs).
     pub fn would_match(&self, payload: &[u8]) -> bool {
         self.rules.iter().any(|r| r.matches(payload))
@@ -126,6 +168,51 @@ mod tests {
         let out = s.apply(b"ping").expect("rewrite");
         assert!(out.len() > 4, "expansion rule produces longer payload");
         assert_eq!(s.apply(b"nothing here"), None);
+    }
+
+    #[test]
+    fn patches_hit_exact_positions_and_keep_framing() {
+        let s = RuleSet {
+            mode: Mode::Enforce,
+            rules: vec![RewriteRule {
+                name: "mask".into(),
+                match_contains: Some("sk-secret123".into()),
+                match_equals: None,
+                replace: "REDACTEDXXXX".into(), // exactly 12 = needle len
+            }],
+        };
+        let payload = b"POST /x HTTP/1.1\r\n\r\n{\"c\":\"token: sk-secret123 do-not-leak\"}";
+        let patches = s.patches_in_place(payload).expect("patches");
+        let mut patched = payload.to_vec();
+        for (at, bytes) in &patches {
+            patched[*at..*at + bytes.len()].copy_from_slice(bytes);
+        }
+        let out = String::from_utf8(patched).unwrap_or_default();
+        assert!(
+            out.starts_with("POST /x HTTP/1.1"),
+            "request line preserved"
+        );
+        assert!(out.contains("REDACTED"), "secret replaced in place");
+        assert!(!out.contains("sk-secret123"));
+        assert_eq!(payload.len(), out.len(), "equal length keeps framing");
+        assert!(s.patches_in_place(b"clean").is_none());
+    }
+
+    #[test]
+    fn unequal_length_patch_rejected_for_in_place() {
+        let s = set(Mode::Enforce);
+        // expansion rule alone cannot be patched in place
+        let bare = RuleSet {
+            mode: Mode::Enforce,
+            rules: vec![RewriteRule {
+                name: "expand".into(),
+                match_contains: None,
+                match_equals: Some("ping".into()),
+                replace: "ping-longer".into(),
+            }],
+        };
+        assert!(bare.patches_in_place(b"ping").is_none());
+        let _ = s;
     }
 
     #[test]

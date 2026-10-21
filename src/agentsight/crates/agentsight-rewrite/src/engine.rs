@@ -267,6 +267,40 @@ impl RewriteEngine {
             }
         }
 
+        // Preferred mode: equal-length in-place substring patches. They keep
+        // the request line, headers and Content-Length framing intact and
+        // need no remote allocation (validated against real node/python
+        // runtimes; see the P0 field-test notes).
+        if let Some(patches) = self.rules.patches_in_place(&payload) {
+            self.stats.rewritten += 1;
+            let mut after = payload.clone();
+            let mut ok = true;
+            for (at, bytes) in &patches {
+                after[*at..*at + bytes.len()].copy_from_slice(bytes);
+                if let Err(e) = self.mem.write(buf_ptr + *at as u64, bytes) {
+                    log::error!("hit {tid}: in-place patch write failed: {e}");
+                    ok = false;
+                }
+            }
+            if !ok {
+                return;
+            }
+            log::info!(
+                "hit#{} tid={tid} len={num} in-place rewrite ({} patches): {:?} => {:?}",
+                self.stats.hits,
+                patches.len(),
+                String::from_utf8_lossy(&payload),
+                String::from_utf8_lossy(&after)
+            );
+            if let Err(e) = ptrace::setregs(tid, &orig).and_then(|_| ptrace::singlestep(tid)) {
+                log::error!("hit {tid}: passthrough resume failed: {e}");
+            }
+            if let Some(th) = self.threads.get_mut(&tid) {
+                th.phase = Phase::StepOver;
+            }
+            return;
+        }
+
         let replacement = self.rules.apply(&payload);
         if replacement.is_none() && self.rules.would_match(&payload) {
             self.stats.would_match += 1;
