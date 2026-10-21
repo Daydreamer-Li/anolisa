@@ -61,6 +61,97 @@ pub fn module_base(maps: &[MapEntry], needle: &str, pid: i32) -> Result<(u64, St
         })
 }
 
+// ---------------------------------------------------------------------------
+// Static-binary SSL_write resolution (Tier 2), ported from the observation
+// side (probes/sslsniff.rs find_static_ssl_offsets) with one deliberate
+// difference: we scan the target's executable mappings in memory instead of
+// the ELF file, so pattern hits are already runtime VAs and no PT_LOAD
+// offset-to-vaddr conversion is needed for static-pie binaries.
+// ---------------------------------------------------------------------------
+
+/// SSL_read prologue (OpenSSL/BoringSSL, x86_64).
+pub const READ_PAT: &[u8] = &[
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50, 0x48, 0x83, 0xbf, 0x98, 0x00, 0x00,
+    0x00, 0x00, 0x74,
+];
+/// SSL_write prologue.
+pub const WRITE_PAT: &[u8] = &[
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec,
+    0x18, 0x41, 0x89, 0xd7, 0x49, 0x89, 0xf6, 0x48, 0x89, 0xfb,
+];
+/// SSL_do_handshake prologues, one per toolchain flavor (clang builds vs bun
+/// single-file executables); copied from the observation side.
+pub const HANDSHAKE_PATS: &[&[u8]] = &[
+    &[
+        0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83,
+        0xec, 0x28, 0x49, 0x89, 0xfc, 0x48, 0x8b, 0x47, 0x30,
+    ],
+    &[
+        0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50, 0x4c, 0x8b, 0x7f, 0x30, 0x49,
+        0x83, 0xbf, 0x18, 0x01, 0x00, 0x00, 0x00, 0x74,
+    ],
+];
+/// Max distance between SSL_read and SSL_write in one compilation unit.
+const ADJACENCY: u64 = 0x1000;
+
+fn find_all(haystack: &[u8], needle: &[u8], base_va: u64) -> Vec<u64> {
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, w)| *w == needle)
+        .map(|(i, _)| base_va + i as u64)
+        .collect()
+}
+
+/// Locate the SSL_write runtime VA inside the executable mappings of
+/// `image_path` using the observation side's semantics: SSL_read must match
+/// exactly once, a handshake variant must exist before it, and SSL_write must
+/// be the first write-pattern hit within 4KB after SSL_read. Returns None
+/// when any confidence check fails - the caller must not guess, because a
+/// rewrite breakpoint at a wrong address corrupts the target instead of
+/// merely missing events.
+pub fn find_static_write_va(
+    mem: &mut super::proc_mem::ProcMem,
+    maps: &[MapEntry],
+    image_path: &str,
+) -> Option<u64> {
+    let mut read: Vec<u64> = Vec::new();
+    let mut write: Vec<u64> = Vec::new();
+    let mut handshake: Vec<u64> = Vec::new();
+    for m in maps
+        .iter()
+        .filter(|m| m.perms.contains('x') && m.path == image_path)
+    {
+        let len = (m.end - m.start) as usize;
+        if len > 256 * 1024 * 1024 {
+            continue; // sanity bound
+        }
+        let mut buf = vec![0u8; len];
+        mem.read(m.start, &mut buf).ok()?;
+        read.extend(find_all(&buf, READ_PAT, m.start));
+        write.extend(find_all(&buf, WRITE_PAT, m.start));
+        for pat in HANDSHAKE_PATS {
+            handshake.extend(find_all(&buf, pat, m.start));
+        }
+    }
+    if read.len() != 1 {
+        log::debug!(
+            "[resolve] SSL_read pattern matches = {}, need exactly 1",
+            read.len()
+        );
+        return None;
+    }
+    let read_va = read[0];
+    handshake.retain(|&v| v < read_va);
+    handshake.sort_unstable();
+    handshake.last()?; // handshake must exist before read
+    write
+        .iter()
+        .copied()
+        .filter(|&v| v > read_va && v - read_va < ADJACENCY)
+        .min()
+}
+
 /// Find a `syscall` (0F 05) byte pair inside an executable mapping of libc.
 /// Executing the pair as an instruction is the standard remote-syscall trick;
 /// the byte pair may straddle real instruction boundaries, which is fine.
@@ -81,20 +172,24 @@ pub fn find_syscall_gadget(mem: &mut super::proc_mem::ProcMem, maps: &[MapEntry]
     Err(RewriteError::NoSyscallGadget { pid: mem.pid() })
 }
 
-/// Return `st_value` of `symbol` in the ELF64 dynamic symbol table of `path`.
-/// For an ET_DYN shared object this is the offset to add to the load base.
+/// Return `st_value` of `symbol` in the ELF64 symbol tables of `path`,
+/// trying `.dynsym` first and then the full `.symtab` (unstripped static
+/// binaries like uv-Python keep SSL_write as a local symbol there). For an
+/// ET_DYN object the value is an offset to add to the load base.
 pub fn symbol_vaddr(path: &str, symbol: &str) -> Result<u64> {
     let data = fs::read(path).map_err(|e| RewriteError::ElfRead {
         path: path.to_string(),
         source: e,
     })?;
-    parse_dynsym_vaddr(&data, symbol).ok_or_else(|| RewriteError::SymbolNotFound {
-        symbol: symbol.to_string(),
-        path: path.to_string(),
-    })
+    parse_sym_vaddr(&data, symbol, /*dynsym_only=*/ true)
+        .or_else(|| parse_sym_vaddr(&data, symbol, false))
+        .ok_or_else(|| RewriteError::SymbolNotFound {
+            symbol: symbol.to_string(),
+            path: path.to_string(),
+        })
 }
 
-fn parse_dynsym_vaddr(data: &[u8], symbol: &str) -> Option<u64> {
+fn parse_sym_vaddr(data: &[u8], symbol: &str, dynsym_only: bool) -> Option<u64> {
     if data.len() < 64 || &data[0..4] != b"\x7fELF" || data[4] != 2 {
         return None; // not ELF64 little-endian
     }
@@ -120,12 +215,14 @@ fn parse_dynsym_vaddr(data: &[u8], symbol: &str) -> Option<u64> {
     }
     let sh = |i: usize| shoff + i * shentsize;
 
-    // Locate SHT_DYNSYM and its linked string table section.
+    // Locate the symbol table (SHT_DYNSYM=11, or SHT_SYMTAB=2 for the full
+    // table) and its linked string table section.
+    let want_type: u32 = if dynsym_only { 11 } else { 2 };
     let mut sym = None;
     for i in 0..shnum {
         let h = sh(i);
-        if rd_u32(h + 0x04)? != 11 {
-            continue; // not SHT_DYNSYM
+        if rd_u32(h + 0x04)? != want_type {
+            continue;
         }
         let link = rd_u32(h + 0x28)? as usize;
         if link >= shnum {
@@ -237,6 +334,24 @@ mod tests {
     #[test]
     fn dynsym_lookup_fails_cleanly_on_garbage() {
         let garbage = b"not an elf file at all, definitely".to_vec();
-        assert!(parse_dynsym_vaddr(&garbage, "SSL_write").is_none());
+        assert!(parse_sym_vaddr(&garbage, "SSL_write", true).is_none());
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+    #[test]
+    fn debug_uv_python_symtab() {
+        let p = std::env::var("REWRITE_DEBUG_ELF").unwrap_or_default();
+        if p.is_empty() {
+            return;
+        }
+        let data = fs::read(&p).unwrap_or_default();
+        eprintln!("file len={}", data.len());
+        let r1 = parse_sym_vaddr(&data, "SSL_write", true);
+        eprintln!("dynsym result={r1:?}");
+        let r2 = parse_sym_vaddr(&data, "SSL_write", false);
+        eprintln!("symtab result={r2:?}");
     }
 }

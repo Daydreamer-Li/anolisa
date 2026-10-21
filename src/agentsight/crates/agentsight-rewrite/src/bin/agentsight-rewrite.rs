@@ -132,11 +132,14 @@ fn main() {
     };
     match engine.run(&shutdown, max_hits) {
         Ok(stats) => log::info!(
-            "done: hits={} rewritten={} advise-matches={} elapsed={}ms",
+            "done: hits={} rewritten={} advise-matches={} elapsed={}ms | per-hit stop latency us: p50={} p99={} max={}",
             stats.hits,
             stats.rewritten,
             stats.would_match,
-            stats.elapsed_ms
+            stats.elapsed_ms,
+            stats.lat_p50_us,
+            stats.lat_p99_us,
+            stats.lat_max_us
         ),
         Err(e) => die(&format!("engine failed: {e}")),
     }

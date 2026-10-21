@@ -67,49 +67,67 @@ pub struct EngineStats {
     pub rewritten: usize,
     pub would_match: usize,
     pub elapsed_ms: u128,
+    /// Per-hit stop duration (breakpoint trap -> resume), microseconds.
+    pub lat_p50_us: u64,
+    pub lat_p99_us: u64,
+    pub lat_max_us: u64,
+}
+
+/// One planted int3 and the byte it replaced.
+struct Breakpoint {
+    addr: u64,
+    orig: [u8; 1],
 }
 
 pub struct RewriteEngine {
     pid: pid_t,
-    bp_addr: u64,
-    orig_byte: [u8; 1],
+    bps: Vec<Breakpoint>,
     gadget: u64,
     mem: ProcMem,
     threads: HashMap<pid_t, Thread>,
     rules: RuleSet,
     stats: EngineStats,
     started: std::time::Instant,
+    /// Hit currently being serviced (single-threaded event loop, so at most
+    /// one at a time); completed on the resume in `step_over`.
+    hit_start: Option<std::time::Instant>,
+    latencies_us: Vec<u64>,
+    last_thread_scan: std::time::Instant,
 }
+
+/// How often to rescan /proc/<pid>/task for threads spawned after attach.
+/// Untraced threads that hit a planted int3 die with SIGTRAP (they have no
+/// tracer and usually no safety-net handler), so the scan interval is a
+/// correctness bound, not a performance knob.
+const THREAD_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl RewriteEngine {
     /// Resolve the SSL_write address in the target, seize all current
     /// threads, arm the breakpoint and spawn the crash watchdog.
     pub fn attach(pid: pid_t, rules: RuleSet) -> Result<Self> {
         let maps = maps::parse_maps(pid)?;
-        let (ssl_base, ssl_path) = maps::module_base(&maps, "libssl", pid)?;
-        let sym_off = maps::symbol_vaddr(&ssl_path, "SSL_write")?;
-        let bp_addr = ssl_base + sym_off;
-        log::info!(
-            "libssl base {ssl_base:#x} ({ssl_path}) SSL_write {sym_off:#x} -> bp {bp_addr:#x}"
-        );
-
         let mut mem = ProcMem::open(pid)?;
+
+        let resolved = resolve_breakpoints(pid, &maps, &mut mem)?;
+
         let gadget = maps::find_syscall_gadget(&mut mem, &maps)?;
         log::info!("remote syscall gadget at {gadget:#x}");
 
         let mut engine = RewriteEngine {
             pid,
-            bp_addr,
-            orig_byte: [0u8; 1],
+            bps: Vec::new(),
             gadget,
             mem,
             threads: HashMap::new(),
             rules,
             stats: EngineStats::default(),
             started: std::time::Instant::now(),
+            hit_start: None,
+            latencies_us: Vec::new(),
+            last_thread_scan: std::time::Instant::now() - THREAD_SCAN_INTERVAL,
         };
         engine.seize_all()?;
-        engine.arm_breakpoint()?;
+        engine.arm_breakpoints(&resolved)?;
         Ok(engine)
     }
 
@@ -140,20 +158,57 @@ impl RewriteEngine {
         Ok(())
     }
 
-    fn arm_breakpoint(&mut self) -> Result<()> {
-        self.mem.read(self.bp_addr, &mut self.orig_byte)?;
-        if self.orig_byte[0] == 0xCC {
-            return Err(RewriteError::Config(format!(
-                "byte at bp {:#x} is already 0xCC; another tracer attached?",
-                self.bp_addr
-            )));
+    /// SEIZE threads spawned after attach. A window remains (a thread that
+    /// traps between its creation and the next scan is still lost) but it
+    /// shrinks the exposure from "all future threads" to "50ms of thread
+    /// lifetime"; combined with the target-side SIGTRAP safety net this is
+    /// the P0-validated containment.
+    fn seize_new_threads(&mut self) {
+        let tids: Vec<pid_t> = std::fs::read_dir(format!("/proc/{}/task", self.pid))
+            .map_err(RewriteError::Io)
+            .ok()
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter_map(|s| s.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for tid in tids {
+            if self.threads.contains_key(&tid) {
+                continue;
+            }
+            if ptrace::seize(tid) {
+                log::debug!("seized new thread {tid}");
+                self.threads.insert(
+                    tid,
+                    Thread {
+                        phase: Phase::Idle,
+                        remote_buf: 0,
+                        remote_cap: 0,
+                    },
+                );
+            }
         }
-        self.mem.write(self.bp_addr, &[0xCC])?;
-        watchdog::spawn(self.pid, self.bp_addr, self.orig_byte[0])?;
-        log::info!(
-            "breakpoint armed (orig byte {:#x}), watchdog spawned",
-            self.orig_byte[0]
-        );
+    }
+
+    fn arm_breakpoints(&mut self, resolved: &[(u64, String)]) -> Result<()> {
+        for (addr, what) in resolved {
+            let mut orig = [0u8; 1];
+            self.mem.read(*addr, &mut orig)?;
+            if orig[0] == 0xCC {
+                return Err(RewriteError::Config(format!(
+                    "byte at {addr:#x} is already 0xCC; another tracer attached?"
+                )));
+            }
+            self.mem.write(*addr, &[0xCC])?;
+            watchdog::spawn(self.pid, *addr, orig[0])?;
+            log::info!(
+                "breakpoint armed at {addr:#x} ({what}, orig {:#x})",
+                orig[0]
+            );
+            self.bps.push(Breakpoint { addr: *addr, orig });
+        }
         Ok(())
     }
 
@@ -174,8 +229,21 @@ impl RewriteEngine {
                 log::info!("no threads left under control, target finished");
                 break;
             }
+            // Thread scan must run even when no tracee produces events
+            // (a blocking waitpid would otherwise starve it, and untraced
+            // threads die on the planted int3).
+            if self.last_thread_scan.elapsed() >= THREAD_SCAN_INTERVAL {
+                self.last_thread_scan = std::time::Instant::now();
+                self.seize_new_threads();
+            }
             let mut status: c_int = 0;
-            let tid = unsafe { waitpid(-1, &mut status, __WALL) };
+            let tid = unsafe { waitpid(-1, &mut status, __WALL | libc::WNOHANG) };
+            if tid == 0 {
+                // No pending event: brief park keeps the scan ticking without
+                // burning a core (sub-millisecond, well under one LLM RTT).
+                std::thread::sleep(std::time::Duration::from_micros(500));
+                continue;
+            }
             if tid < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
@@ -200,6 +268,13 @@ impl RewriteEngine {
             self.handle_stop(tid, sig, event);
         }
         self.stats.elapsed_ms = self.started.elapsed().as_millis();
+        let mut lat = std::mem::take(&mut self.latencies_us);
+        lat.sort_unstable();
+        if !lat.is_empty() {
+            self.stats.lat_p50_us = lat[lat.len() / 2];
+            self.stats.lat_p99_us = lat[lat.len() * 99 / 100];
+            self.stats.lat_max_us = lat[lat.len() - 1];
+        }
         self.shutdown();
         Ok(self.stats)
     }
@@ -233,12 +308,14 @@ impl RewriteEngine {
                 }
             };
             let hit_rip = regs.rip - 1;
-            if hit_rip != self.bp_addr {
+            let Some(bp) = self.bps.iter().find(|b| b.addr == hit_rip) else {
                 // A foreign SIGTRAP: deliver it unchanged.
                 let _ = ptrace::cont(tid, sig);
                 return;
-            }
-            self.process_hit(tid, regs);
+            };
+            let (bp_addr, orig_byte) = (bp.addr, bp.orig);
+            self.hit_start = Some(std::time::Instant::now());
+            self.process_hit(tid, regs, bp_addr, orig_byte);
         } else if event == libc::PTRACE_EVENT_STOP && sig == libc::SIGTRAP {
             // group-stop / interrupt-stop: resume without signal injection
             let _ = ptrace::cont(tid, 0);
@@ -248,12 +325,18 @@ impl RewriteEngine {
         }
     }
 
-    fn process_hit(&mut self, tid: pid_t, mut regs: user_regs_struct) {
+    fn process_hit(
+        &mut self,
+        tid: pid_t,
+        mut regs: user_regs_struct,
+        bp_addr: u64,
+        orig_byte: [u8; 1],
+    ) {
         self.stats.hits += 1;
-        regs.rip = self.bp_addr; // rewind onto the instruction to re-execute
+        regs.rip = bp_addr; // rewind onto the instruction to re-execute
         let orig = regs;
 
-        if let Err(e) = self.mem.write(self.bp_addr, &self.orig_byte) {
+        if let Err(e) = self.mem.write(bp_addr, &orig_byte) {
             log::error!("hit {tid}: cannot disarm breakpoint: {e}");
             return;
         }
@@ -461,13 +544,18 @@ impl RewriteEngine {
 
     /// Re-arm the breakpoint and resume normal execution.
     fn step_over(&mut self, tid: pid_t) {
-        if let Err(e) = self.mem.write(self.bp_addr, &[0xCC]) {
-            log::error!("re-arm failed on tid {tid}: {e}");
+        for b in &self.bps {
+            if let Err(e) = self.mem.write(b.addr, &[0xCC]) {
+                log::error!("re-arm failed on tid {tid}: {e}");
+            }
         }
         if let Some(th) = self.threads.get_mut(&tid) {
             th.phase = Phase::Idle;
         }
         let _ = ptrace::cont(tid, 0);
+        if let Some(t0) = self.hit_start.take() {
+            self.latencies_us.push(t0.elapsed().as_micros() as u64);
+        }
     }
 
     /// Best-effort recovery for a thread whose mid-pipeline state broke:
@@ -482,23 +570,33 @@ impl RewriteEngine {
             if let Some(th) = self.threads.get_mut(&tid) {
                 th.phase = Phase::Idle;
             }
-            // The breakpoint byte is disarmed at this point; re-arm now so
-            // the engine does not miss hits until the next StepOver.
-            let _ = self.mem.write(self.bp_addr, &[0xCC]);
+            // The breakpoint bytes are disarmed at this point; re-arm now
+            // so the engine does not miss hits until the next StepOver.
+            for b in &self.bps {
+                let _ = self.mem.write(b.addr, &[0xCC]);
+            }
         }
     }
 
     fn shutdown(&mut self) {
+        let mut lat = self.latencies_us.clone();
+        lat.sort_unstable();
+        let (p50, p99) = (
+            lat.get(lat.len() / 2).copied().unwrap_or(0),
+            lat.get(lat.len() * 99 / 100).copied().unwrap_or(0),
+        );
         log::info!(
-            "shutting down: hits={} rewritten={} advise-matches={} elapsed={}ms",
+            "shutting down: hits={} rewritten={} advise-matches={} elapsed={}ms lat_us p50={p50} p99={p99}",
             self.stats.hits,
             self.stats.rewritten,
             self.stats.would_match,
             self.stats.elapsed_ms
         );
-        // Restore the byte first so resumed threads never see the int3.
-        if let Err(e) = self.mem.write(self.bp_addr, &self.orig_byte) {
-            log::warn!("bp restore failed: {e}");
+        // Restore the bytes first so resumed threads never see the int3.
+        for b in &self.bps {
+            if let Err(e) = self.mem.write(b.addr, &b.orig) {
+                log::warn!("bp restore failed: {e}");
+            }
         }
         let tids: Vec<pid_t> = self.threads.keys().copied().collect();
         for tid in tids {
@@ -525,23 +623,27 @@ impl RewriteEngine {
         }
         self.threads.clear();
         // Belt and braces (also covers the watchdog being unable to run).
-        let _ = self.mem.write(self.bp_addr, &self.orig_byte);
+        for b in &self.bps {
+            let _ = self.mem.write(b.addr, &b.orig);
+        }
         if unsafe { libc::kill(self.pid, 0) } != 0 {
             log::info!("target exited after detach");
             return;
         }
-        let mut check = [0u8; 1];
-        match self.mem.read(self.bp_addr, &mut check) {
-            Ok(()) if check == self.orig_byte => {
-                log::info!("clean detach, no residual breakpoint");
+        for b in &self.bps {
+            let mut check = [0u8; 1];
+            match self.mem.read(b.addr, &mut check) {
+                Ok(()) if check == b.orig => log::debug!("bp {:#x} restored", b.addr),
+                Ok(()) => log::error!(
+                    "bp {:#x} byte {:#x} != expected {:#x} after detach",
+                    b.addr,
+                    check[0],
+                    b.orig[0]
+                ),
+                Err(e) => log::error!("bp byte verification failed: {e}"),
             }
-            Ok(()) => log::error!(
-                "bp byte {:#x} != expected {:#x} after detach",
-                check[0],
-                self.orig_byte[0]
-            ),
-            Err(e) => log::error!("bp byte verification failed: {e}"),
         }
+        log::info!("clean detach, no residual breakpoint");
     }
 }
 
@@ -554,10 +656,85 @@ fn singlestep_to_stepover(tid: pid_t, th: &mut Thread) {
     }
 }
 
+/// Resolve the SSL_write breakpoint address for `pid` with the full tier
+/// Resolve every SSL-write-family breakpoint for `pid` with the full tier
+/// chain, shared by the daemon pre-flight check and `attach`:
+///
+/// - tier 1: dynamic libssl symbol table;
+/// - tier 1.5: main executable symbol table (unstripped static builds such
+///   as uv-Python keep SSL_write / SSL_write_ex as local .symtab symbols);
+/// - tier 2: prologue-pattern confidence chain.
+///
+/// SSL_write_ex shares SSL_write's first three arguments, so both entry
+/// points run the same rewrite logic; OpenSSL 3 callers may use only the
+/// `_ex` variant, so both must be instrumented.
+fn resolve_breakpoints(
+    pid: pid_t,
+    maps: &[maps::MapEntry],
+    mem: &mut ProcMem,
+) -> Result<Vec<(u64, String)>> {
+    let mut out = Vec::new();
+    let symbol_host: Option<(u64, String)> = match maps::module_base(maps, "libssl", pid) {
+        Ok((base, path)) => Some((base, path)),
+        Err(_) => {
+            let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map_err(RewriteError::Io)?
+                .to_string_lossy()
+                .into_owned();
+            // ET_DYN (PIE): st_value is relative to the load base.
+            let base = maps
+                .iter()
+                .filter(|m| m.path == exe)
+                .map(|m| m.start)
+                .min()
+                .unwrap_or(0);
+            Some((base, exe))
+        }
+    };
+    if let Some((base, path)) = symbol_host {
+        for sym in ["SSL_write", "SSL_write_ex"] {
+            if let Ok(off) = maps::symbol_vaddr(&path, sym) {
+                let tier = if out.is_empty() { "1" } else { "1b" };
+                out.push((base + off, format!("tier{tier}-dynsym {sym} ({path})")));
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map_err(RewriteError::Io)?
+        .to_string_lossy()
+        .into_owned();
+    for sym in ["SSL_write", "SSL_write_ex"] {
+        if let Ok(off) = maps::symbol_vaddr(&exe, sym) {
+            let base = maps
+                .iter()
+                .filter(|m| m.path == exe)
+                .map(|m| m.start)
+                .min()
+                .unwrap_or(0);
+            let tier = if out.is_empty() { "1.5" } else { "1.5b" };
+            out.push((base + off, format!("tier{tier}-exe-symtab {sym} ({exe})")));
+        }
+    }
+    if out.is_empty() {
+        let va = maps::find_static_write_va(mem, maps, &exe).ok_or_else(|| {
+            RewriteError::SymbolNotFound {
+                symbol: "SSL_write (static pattern)".to_string(),
+                path: exe.clone(),
+            }
+        })?;
+        out.push((va, format!("tier2-pattern ({exe})")));
+    }
+    Ok(out)
+}
+
 /// Resolve the breakpoint address for `pid` without attaching (used by the
 /// daemon for a pre-flight check and logging).
 pub fn probe_breakpoint_address(pid: pid_t) -> Result<u64> {
     let maps = maps::parse_maps(pid)?;
-    let (base, path) = maps::module_base(&maps, "libssl", pid)?;
-    Ok(base + maps::symbol_vaddr(&path, "SSL_write")?)
+    let mut mem = ProcMem::open(pid)?;
+    let all = resolve_breakpoints(pid, &maps, &mut mem)?;
+    Ok(all[0].0)
 }
