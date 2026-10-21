@@ -100,9 +100,12 @@ Two behaviours to keep in mind:
   and database are created owner-only (`0700`/`0600`), because trajectories embed full conversation
   content.
 
-The default scan roots are `/root` and `/home/*`. If the home directory lies elsewhere (a container
-using `/app`, for example), set `features.trajectory_collection.scan_dirs` to the session
-directories explicitly.
+JSONL discovery scans `/root` and `/home/*` by default and also honors an inherited
+`CLAUDE_CONFIG_DIR`. If `scan_dirs` is set, it overrides these defaults. A configured path may be a
+session root or a workspace containing per-session `.claude/projects` trees. Nested discovery
+checks up to four directory levels with a 4096-directory budget and does not follow directory
+symlinks. When SDK options set a non-standard subprocess-only config directory, expose the same
+`CLAUDE_CONFIG_DIR` to the AgentSight process and leave `scan_dirs` unset.
 
 ## agentsight serve
 

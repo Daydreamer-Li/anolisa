@@ -155,6 +155,7 @@ Tuning knobs that come with a feature:
 | `features.sqlite_storage.batch.max_size` | `100` | Rows per write batch |
 | `features.sqlite_storage.batch.flush_ms` | `100` | Maximum batch delay in milliseconds |
 | `features.trajectory_collection.scan_interval_secs` | `30` | Scan interval for discovering trajectory files; storage cleanup uses `storage.trajectories.check_interval_secs` |
+| `features.trajectory_collection.scan_dirs` | unset | Overrides default roots and `CLAUDE_CONFIG_DIR`. Each path may be a session root or a workspace containing `.claude/projects` within four levels |
 
 ## Runtime limits
 

@@ -148,6 +148,7 @@ AgentSight 只读一个 JSON 文件：`/etc/agentsight/config.json`（可用 `--
 | `features.sqlite_storage.batch.max_size` | `100` | 每批写入行数 |
 | `features.sqlite_storage.batch.flush_ms` | `100` | 批量写入的最大延迟（毫秒） |
 | `features.trajectory_collection.scan_interval_secs` | `30` | 轨迹文件发现间隔；存储清理由 `storage.trajectories.check_interval_secs` 控制 |
+| `features.trajectory_collection.scan_dirs` | 未设置 | 覆盖默认位置及 `CLAUDE_CONFIG_DIR`；每项可指向会话根目录或四级内含 `.claude/projects` 的工作区上层目录 |
 
 ## 运行时上限
 

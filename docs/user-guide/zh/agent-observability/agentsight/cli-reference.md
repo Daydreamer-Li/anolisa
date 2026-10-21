@@ -92,8 +92,10 @@ agentsight trace --no-ebpf
   启动时会打印实际路径和对应的 `serve --db` 命令；发生回退时需把该路径传给 `serve`。回退目录与
   数据库按仅属主权限（`0700`/`0600`）创建，因为轨迹内含完整对话内容。
 
-默认扫描根目录是 `/root` 和 `/home/*`。若 home 目录不在这两处（例如容器使用 `/app`），需显式配置
-`features.trajectory_collection.scan_dirs` 指向会话目录。
+JSONL 默认扫描 `/root` 和 `/home/*`，并识别 AgentSight 进程继承的 `CLAUDE_CONFIG_DIR`。
+设置 `scan_dirs` 会覆盖这些默认位置。配置项可指向会话根目录或包含多个会话工作区的上层目录；嵌套发现
+最多向下四级、每个根目录最多检查 4096 个目录，且不跟随目录符号链接。若 SDK options 只给 CLI
+子进程设置了非标准配置目录，需向 AgentSight 进程设置相同的 `CLAUDE_CONFIG_DIR`，并留空 `scan_dirs`。
 
 ## agentsight serve
 

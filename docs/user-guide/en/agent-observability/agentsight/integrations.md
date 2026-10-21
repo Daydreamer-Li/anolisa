@@ -22,8 +22,13 @@ Any process matched by a discovery rule is traced. The shipped rule set (31 rule
 | Runloop Node server | `Runloop` |
 
 Anything else works too — add a rule, as described in
-[Agent discovery rules](configuration.md#agent-discovery-rules). Two details worth knowing:
+[Agent discovery rules](configuration.md#agent-discovery-rules). Integration details worth knowing:
 
+- **Claude Agent SDK** trajectories use the Claude Code JSONL converter. Standard
+  `~/.claude/projects` and inherited `CLAUDE_CONFIG_DIR` locations are automatic. If SDK options set
+  the config only for the CLI subprocess, expose the same variable to AgentSight. For one `.claude`
+  per tenant workspace, add the workspace parent to `features.trajectory_collection.scan_dirs`;
+  bounded nested discovery labels those sessions as `claude-code` rather than Qoder.
 - **OpenClaw** is observed through its `openclaw-gateway` daemon, not the client. If Token data is
   missing, check that the client actually reaches the gateway.
 - **Codex CLI** statically links its TLS library, so AgentSight falls back to byte-pattern matching

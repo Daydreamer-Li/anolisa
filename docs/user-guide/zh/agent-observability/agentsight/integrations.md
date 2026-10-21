@@ -21,8 +21,12 @@ AgentSight 观测 Agent 时不需要被嵌进 Agent 里；同样，当机器上�
 | AgentScope | `AgentScope` |
 | Runloop Node 服务 | `Runloop` |
 
-其他 Agent 也能支持——按 [Agent 发现规则](configuration.md#agent-发现规则)加一条规则即可。两个细节：
+其他 Agent 也能支持——按 [Agent 发现规则](configuration.md#agent-发现规则)加一条规则即可。需要注意的集成细节：
 
+- **Claude Agent SDK** 轨迹复用 Claude Code JSONL 转换器。标准的 `~/.claude/projects` 和 AgentSight
+  进程继承的 `CLAUDE_CONFIG_DIR` 会被自动发现。若 SDK options 只给 CLI 子进程设置配置目录，需向
+  AgentSight 暴露相同变量；若每个租户工作区各有一个 `.claude`，则把工作区上层目录加入
+  `features.trajectory_collection.scan_dirs`。有界递归发现会将这些会话正确标为 `claude-code`，不会误标为 Qoder。
 - **OpenClaw** 观测的是它的 `openclaw-gateway` 守护进程，而不是客户端。缺 Token 数据时，先确认客户端
   确实连上了 gateway。
 - **Codex CLI** 静态链接 TLS 库，AgentSight 会退化到字节模式匹配加逐版本 offset 表。刚发布的 Codex
