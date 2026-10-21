@@ -693,9 +693,9 @@ fn resolve_breakpoints(
     };
     if let Some((base, path)) = symbol_host {
         for sym in ["SSL_write", "SSL_write_ex"] {
-            if let Ok(off) = maps::symbol_vaddr(&path, sym) {
+            if let Ok(va) = maps::symbol_runtime_vaddr(&path, sym, base) {
                 let tier = if out.is_empty() { "1" } else { "1b" };
-                out.push((base + off, format!("tier{tier}-dynsym {sym} ({path})")));
+                out.push((va, format!("tier{tier}-sym {sym} ({path})")));
             }
         }
         if !out.is_empty() {
@@ -706,16 +706,16 @@ fn resolve_breakpoints(
         .map_err(RewriteError::Io)?
         .to_string_lossy()
         .into_owned();
+    let base = maps
+        .iter()
+        .filter(|m| m.path == exe)
+        .map(|m| m.start)
+        .min()
+        .unwrap_or(0);
     for sym in ["SSL_write", "SSL_write_ex"] {
-        if let Ok(off) = maps::symbol_vaddr(&exe, sym) {
-            let base = maps
-                .iter()
-                .filter(|m| m.path == exe)
-                .map(|m| m.start)
-                .min()
-                .unwrap_or(0);
+        if let Ok(va) = maps::symbol_runtime_vaddr(&exe, sym, base) {
             let tier = if out.is_empty() { "1.5" } else { "1.5b" };
-            out.push((base + off, format!("tier{tier}-exe-symtab {sym} ({exe})")));
+            out.push((va, format!("tier{tier}-exe-sym {sym} ({exe})")));
         }
     }
     if out.is_empty() {

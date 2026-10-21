@@ -103,6 +103,25 @@ fn find_all(haystack: &[u8], needle: &[u8], base_va: u64) -> Vec<u64> {
         .collect()
 }
 
+/// Runtime address of `symbol` in the ELF image at `path` as loaded in a
+/// process whose lowest mapping is `base`: ET_DYN (PIE) adds the base,
+/// ET_EXEC already bakes the link address into st_value.
+pub fn symbol_runtime_vaddr(path: &str, symbol: &str, base: u64) -> Result<u64> {
+    let data = fs::read(path).map_err(|e| RewriteError::ElfRead {
+        path: path.to_string(),
+        source: e,
+    })?;
+    if data.len() < 20 {
+        return Err(RewriteError::SymbolNotFound {
+            symbol: symbol.to_string(),
+            path: path.to_string(),
+        });
+    }
+    let is_dyn = u16::from_le_bytes(data[16..18].try_into().unwrap()) == 3; // ET_DYN
+    let val = symbol_vaddr(path, symbol)?;
+    Ok(if is_dyn { base + val } else { val })
+}
+
 /// Locate the SSL_write runtime VA inside the executable mappings of
 /// `image_path` using the observation side's semantics: SSL_read must match
 /// exactly once, a handshake variant must exist before it, and SSL_write must
