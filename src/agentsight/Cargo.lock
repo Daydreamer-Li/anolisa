@@ -384,6 +384,7 @@ dependencies = [
  "log 0.4.33",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

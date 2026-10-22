@@ -54,11 +54,12 @@ fn die(msg: &str) -> ! {
     std::process::exit(2);
 }
 
-fn parse_args() -> (i32, String, usize) {
+fn parse_args() -> (i32, String, usize, Option<String>) {
     let args: Vec<String> = std::env::args().collect();
     let mut pid: Option<i32> = None;
     let mut rules_path = DEFAULT_RULES_PATH.to_string();
     let mut max_hits = usize::MAX;
+    let mut offsets_path: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let flag = args[i].clone();
@@ -75,6 +76,7 @@ fn parse_args() -> (i32, String, usize) {
                             .unwrap_or_else(|_| die("--pid expects a numeric pid")),
                     )
                 }
+                "--offsets" => offsets_path = Some(value),
                 "--rules" => rules_path = value,
                 "--max-hits" => {
                     max_hits = value
@@ -85,15 +87,15 @@ fn parse_args() -> (i32, String, usize) {
             }
         } else {
             die(&format!(
-                "unknown argument {flag:?}; expected --pid/--rules/--max-hits"
+                "unknown argument {flag:?}; expected --pid/--rules/--max-hits/--offsets"
             ));
         }
         i += 1;
     }
     let Some(pid) = pid else {
-        die("usage: agentsight-rewrite --pid <pid> [--rules <path>] [--max-hits <n>]");
+        die("usage: agentsight-rewrite --pid <pid> [--rules <path>] [--offsets <path>] [--max-hits <n>]");
     };
-    (pid, rules_path, max_hits)
+    (pid, rules_path, max_hits, offsets_path)
 }
 
 fn load_rules(path: &str) -> agentsight_rewrite::RuleSet {
@@ -105,7 +107,7 @@ fn load_rules(path: &str) -> agentsight_rewrite::RuleSet {
 
 fn main() {
     init_logging();
-    let (pid, rules_path, max_hits) = parse_args();
+    let (pid, rules_path, max_hits, offsets_path) = parse_args();
     let rules = load_rules(&rules_path);
     log::info!(
         "rules loaded from {rules_path}: mode={:?} rules={}",
@@ -113,7 +115,15 @@ fn main() {
         rules.rules.len()
     );
 
-    if let Err(e) = agentsight_rewrite::engine::probe_breakpoint_address(pid) {
+    let offsets = offsets_path.map(|p| {
+        let text = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| die(&format!("cannot read offsets file {p}: {e}")));
+        agentsight_rewrite::OffsetTable::load(&text)
+            .unwrap_or_else(|e| die(&format!("invalid offsets file {p}: {e}")))
+    });
+    if let Err(e) =
+        agentsight_rewrite::engine::probe_breakpoint_address_with_offsets(pid, offsets.as_ref())
+    {
         die(&format!("target {pid} is not attachable: {e}"));
     }
 
@@ -126,7 +136,7 @@ fn main() {
         die(&format!("cannot install signal handler: {e}"));
     }
 
-    let mut engine = match agentsight_rewrite::RewriteEngine::attach(pid, rules) {
+    let mut engine = match agentsight_rewrite::RewriteEngine::attach(pid, rules, offsets) {
         Ok(e) => e,
         Err(e) => die(&format!("attach to {pid} failed: {e}")),
     };

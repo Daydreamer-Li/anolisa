@@ -23,6 +23,7 @@
 pub mod engine;
 pub mod error;
 pub mod maps;
+pub mod offsets;
 pub mod proc_mem;
 pub mod ptrace;
 pub mod remote;
@@ -31,4 +32,5 @@ pub mod watchdog;
 
 pub use engine::RewriteEngine;
 pub use error::{Result, RewriteError};
+pub use offsets::OffsetTable;
 pub use rules::{Mode, RewriteRule, RuleSet};

@@ -171,6 +171,83 @@ pub fn find_static_write_va(
         .min()
 }
 
+/// Whether `path` is an ET_DYN (PIE / shared-object) ELF image. ET_DYN
+/// symbol/offset values are relative to the load base; ET_EXEC values are
+/// absolute.
+pub fn is_dyn_elf(path: &str) -> Option<bool> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hdr = [0u8; 20];
+    f.read_exact(&mut hdr).ok()?;
+    if &hdr[0..4] != b"\x7fELF" || hdr[4] != 2 {
+        return None;
+    }
+    Some(u16::from_le_bytes(hdr[16..18].try_into().unwrap()) == 3)
+}
+
+/// GNU build-id (hex) from the ELF64 PT_NOTE segment of `path`, or None.
+/// Ported from the observation side's probes/elf_buildid.rs with the same
+/// guards: 64-bit little-endian only, and implausible PT_NOTE sizes are
+/// rejected instead of driving a huge allocation.
+pub fn read_buildid(path: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut ident = [0u8; 16];
+    f.read_exact(&mut ident).ok()?;
+    if &ident[0..4] != b"\x7fELF" || ident[4] != 2 || ident[5] != 1 {
+        return None; // ELF64 little-endian only
+    }
+    let mut hdr = [0u8; 48];
+    f.read_exact(&mut hdr).ok()?;
+    let rd16 = |b: &[u8]| u16::from_le_bytes(b.try_into().unwrap());
+    let rd32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
+    let rd64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+    let phoff = rd64(&hdr[16..24]);
+    let phentsize = rd16(&hdr[38..40]) as u64;
+    let phnum = rd16(&hdr[40..42]) as u64;
+    if phoff == 0 || phentsize < 56 {
+        return None;
+    }
+    const MAX_NOTE_BYTES: u64 = 64 * 1024;
+    for i in 0..phnum {
+        let mut ph = [0u8; 56];
+        f.seek(SeekFrom::Start(phoff + i * phentsize)).ok()?;
+        f.read_exact(&mut ph).ok()?;
+        if rd32(&ph[0..4]) != 4 {
+            continue; // PT_NOTE
+        }
+        let p_offset = rd64(&ph[8..16]);
+        let p_filesz = rd64(&ph[32..40]);
+        if p_filesz == 0 || p_filesz > MAX_NOTE_BYTES {
+            continue;
+        }
+        let mut notes = vec![0u8; p_filesz as usize];
+        f.seek(SeekFrom::Start(p_offset)).ok()?;
+        f.read_exact(&mut notes).ok()?;
+        let mut o = 0usize;
+        while o + 12 <= notes.len() {
+            let namesz = u32::from_le_bytes(notes[o..o + 4].try_into().unwrap()) as usize;
+            let descsz = u32::from_le_bytes(notes[o + 4..o + 8].try_into().unwrap()) as usize;
+            let ntype = u32::from_le_bytes(notes[o + 8..o + 12].try_into().unwrap());
+            let desc = o + 12 + namesz;
+            let next = desc + descsz;
+            if namesz == 0 || next > notes.len() {
+                break;
+            }
+            if ntype == 3 && &notes[o + 12..o + 16] == b"GNU\0" {
+                return Some(
+                    notes[desc..desc + descsz]
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect(),
+                );
+            }
+            o = next;
+        }
+    }
+    None
+}
+
 /// Find a `syscall` (0F 05) byte pair inside an executable mapping of libc.
 /// Executing the pair as an instruction is the standard remote-syscall trick;
 /// the byte pair may straddle real instruction boundaries, which is fine.

@@ -104,11 +104,15 @@ const THREAD_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_mill
 impl RewriteEngine {
     /// Resolve the SSL_write address in the target, seize all current
     /// threads, arm the breakpoint and spawn the crash watchdog.
-    pub fn attach(pid: pid_t, rules: RuleSet) -> Result<Self> {
+    pub fn attach(
+        pid: pid_t,
+        rules: RuleSet,
+        offsets: Option<crate::offsets::OffsetTable>,
+    ) -> Result<Self> {
         let maps = maps::parse_maps(pid)?;
         let mut mem = ProcMem::open(pid)?;
 
-        let resolved = resolve_breakpoints(pid, &maps, &mut mem)?;
+        let resolved = resolve_breakpoints(pid, &maps, &mut mem, offsets.as_ref())?;
 
         let gadget = maps::find_syscall_gadget(&mut mem, &maps)?;
         log::info!("remote syscall gadget at {gadget:#x}");
@@ -672,6 +676,7 @@ fn resolve_breakpoints(
     pid: pid_t,
     maps: &[maps::MapEntry],
     mem: &mut ProcMem,
+    offsets: Option<&crate::offsets::OffsetTable>,
 ) -> Result<Vec<(u64, String)>> {
     let mut out = Vec::new();
     let symbol_host: Option<(u64, String)> = match maps::module_base(maps, "libssl", pid) {
@@ -719,6 +724,28 @@ fn resolve_breakpoints(
         }
     }
     if out.is_empty() {
+        // Tier 3: offset fingerprint table (agentsight.json codex_offsets
+        // format) for stripped binaries with no symbols at all. Entry values
+        // follow the same convention as symbol values: relative for ET_DYN,
+        // absolute for ET_EXEC.
+        if let Some(table) = offsets {
+            if let Some(off) = table.lookup(&exe) {
+                let et_dyn = maps::is_dyn_elf(&exe).unwrap_or(true);
+                let va = if et_dyn {
+                    base + off.ssl_write
+                } else {
+                    off.ssl_write
+                };
+                let variant = if off.write_is_ex {
+                    "SSL_write_ex"
+                } else {
+                    "SSL_write"
+                };
+                out.push((va, format!("tier3-fingerprint {variant} ({exe})")));
+            }
+        }
+    }
+    if out.is_empty() {
         let va = maps::find_static_write_va(mem, maps, &exe).ok_or_else(|| {
             RewriteError::SymbolNotFound {
                 symbol: "SSL_write (static pattern)".to_string(),
@@ -733,8 +760,16 @@ fn resolve_breakpoints(
 /// Resolve the breakpoint address for `pid` without attaching (used by the
 /// daemon for a pre-flight check and logging).
 pub fn probe_breakpoint_address(pid: pid_t) -> Result<u64> {
+    probe_breakpoint_address_with_offsets(pid, None)
+}
+
+/// Same as `probe_breakpoint_address`, with an offset fingerprint table.
+pub fn probe_breakpoint_address_with_offsets(
+    pid: pid_t,
+    offsets: Option<&crate::offsets::OffsetTable>,
+) -> Result<u64> {
     let maps = maps::parse_maps(pid)?;
     let mut mem = ProcMem::open(pid)?;
-    let all = resolve_breakpoints(pid, &maps, &mut mem)?;
+    let all = resolve_breakpoints(pid, &maps, &mut mem, offsets)?;
     Ok(all[0].0)
 }
