@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0
+
+### Fixes
+- Bound the Tokenless savings numerator by the request window, so narrowing the dashboard time range no longer counts older optimizations and the savings rate cannot exceed 100%.
+
+### Docs
+- Flatten the user manual layout.
+
 ## 0.14.3
 
 Combined release notes for the 0.14.2 and 0.14.3 release work. Previously shipped fixes recorded in 0.14.2 are identified separately below.
