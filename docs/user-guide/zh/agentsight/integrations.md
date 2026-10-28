@@ -116,6 +116,11 @@ $ sudo journalctl -u agentsight-enforcer
 
 默认级别为 `info`；在 unit 中添加 `Environment=RUST_LOG=debug` 可获得更详细的输出。
 
+系统层文件防误删不是默认 profile 的开箱能力。即使 `ready=true`，也必须检查
+`capabilities.file_delete_guard`；默认 `credential-exfiltration` 不支持该能力。
+切换 `agent-file-guard` 的前置条件、互斥能力、维护窗口及重新 Apply 步骤，见
+[启用系统层文件防误删](deployment.md#启用系统层文件防误删)。
+
 拦截能力还取决于引擎的 hook 预算：只有当引擎启动时预留了对应的 BPF LSM hook、且内核启用了
 BPF LSM（`/sys/kernel/security/lsm` 中包含 `bpf`）时，`block` 规则才能真正拒绝操作。当 `block`
 规则命中在一个无法拒绝该操作的后端上——例如 `block connect` 规则命中时 `enforce_socket_connect`

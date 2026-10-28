@@ -136,6 +136,12 @@ $ sudo journalctl -u agentsight-enforcer
 
 The default level is `info`; add `Environment=RUST_LOG=debug` to the unit for verbose output.
 
+System-level file deletion protection is not available out of the box with the default
+profile. Even when `ready=true`, check `capabilities.file_delete_guard`; the default
+`credential-exfiltration` profile does not provide it. See
+[Enable system-level file deletion protection](deployment.md#enable-system-level-file-deletion-protection)
+for prerequisites, the mutually exclusive capability, maintenance window, and re-apply steps.
+
 Blocking also depends on the engine's hook budget: a `block` rule can only deny an operation when
 the matching BPF LSM hook was reserved at engine start and BPF LSM is active on the kernel
 (`bpf` listed in `/sys/kernel/security/lsm`). When a `block` rule matches on a backend that cannot
