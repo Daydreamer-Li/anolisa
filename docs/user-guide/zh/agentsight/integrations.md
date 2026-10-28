@@ -29,8 +29,12 @@ AgentSight 观测 Agent 时不需要被嵌进 Agent 里；同样，当机器上�
   `features.trajectory_collection.scan_dirs`。有界递归发现会将这些会话正确标为 `claude-code`，不会误标为 Qoder。
 - **OpenClaw** 观测的是它的 `openclaw-gateway` 守护进程，而不是客户端。缺 Token 数据时，先确认客户端
   确实连上了 gateway。
-- **Codex CLI** 静态链接 TLS 库，AgentSight 会退化到字节模式匹配加逐版本 offset 表。刚发布的 Codex
-  版本可能需要更新 `codex_offsets` 条目。
+- **Codex CLI** 静态链接 TLS 库，内嵌 offset 表已包含官方 Linux x86_64 musl 构建的 0.147.0 和
+  0.162.1，并验证了 OpenSSL 路径的 HTTPS Responses 采集。条目按可执行文件大小和指纹匹配，
+  不仅依赖版本号。只修改部署配置中的 `codex_offsets` 无效：该表在编译期嵌入 AgentSight，
+  需要使用包含新条目的重编译二进制。探针挂载前已发出的请求仍可能漏采。
+  `CODEX_CA_CERTIFICATE` 或 `SSL_CERT_FILE` 等自定义 CA 设置可能切换到 rustls；
+  这些 OpenSSL offset 不覆盖该路径或 WebSocket TLS。
 - **Gemini CLI** 轨迹直接从 `~/.gemini/tmp/<project>/chats/session-*.jsonl` 会话文件采集，无需配置。
   项目名取自各项目目录下的 `.project_root` 标记文件。采集器在转换前会重放 CLI 的修正记录
   （`$rewindTo`、`$patch`、`$set`），因此采集到的轨迹与 CLI 恢复会话时看到的对话一致；嵌套在父
