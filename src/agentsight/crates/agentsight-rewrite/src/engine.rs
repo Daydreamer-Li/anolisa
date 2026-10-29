@@ -93,6 +93,9 @@ pub struct RewriteEngine {
     hit_start: Option<std::time::Instant>,
     latencies_us: Vec<u64>,
     last_thread_scan: std::time::Instant,
+    /// Address-space snapshot at attach time; used to map VAs back to file
+    /// offsets when reading original instruction bytes under a live uprobe.
+    maps_snapshot: Vec<maps::MapEntry>,
 }
 
 /// How often to rescan /proc/<pid>/task for threads spawned after attach.
@@ -160,6 +163,7 @@ impl RewriteEngine {
             hit_start: None,
             latencies_us: Vec::new(),
             last_thread_scan: std::time::Instant::now() - THREAD_SCAN_INTERVAL,
+            maps_snapshot: maps.clone(),
         };
         engine.seize_all()?;
         engine.arm_breakpoints(&resolved)?;
@@ -228,21 +232,98 @@ impl RewriteEngine {
     }
 
     fn arm_breakpoints(&mut self, resolved: &[(u64, String)]) -> Result<()> {
-        for (addr, what) in resolved {
+        for (entry, what) in resolved {
+            // Agentsight trace runs uprobes on the same entry. A live uprobe
+            // shows up as int3 (0xCC) on the first byte; planting there is
+            // impossible (the kernel consumes that trap and the ptrace
+            // tracer never sees it). Shift our int3 past the first
+            // instruction instead: entry fires the uprobe (kernel XOLs the
+            // first insn and resumes right after it), and the very next
+            // byte is ours. Only the ubiquitous endbr64 prologue is
+            // recognized -- anything else fails closed.
+            let mut head = [0u8; 8];
+            self.mem.read(*entry, &mut head)?;
+            let mut addr = *entry;
+            let mut shifted = false;
+            if head[0] == 0xCC {
+                let entry = *entry;
+                // A live uprobe owns the entry: its int3 replaced the first
+                // byte of the first instruction. Recover the ORIGINAL bytes
+                // from the backing file (via PT_LOAD) and decode that
+                // instruction's length to place our int3 at the second
+                // instruction boundary -- entry still fires the uprobe, and
+                // the byte right after it is ours. Anything unrecoverable or
+                // unrecognized fails closed.
+                let image = self
+                    .maps_snapshot
+                    .iter()
+                    .find(|m| entry >= m.start && entry < m.end)
+                    .map(|m| m.path.clone())
+                    .ok_or_else(|| {
+                        RewriteError::Config(format!(
+                            "entry {entry:#x}: no backing image found in maps"
+                        ))
+                    })?;
+                let image_base = self
+                    .maps_snapshot
+                    .iter()
+                    .filter(|m| m.path == image)
+                    .map(|m| m.start)
+                    .min()
+                    .unwrap_or(0);
+                let rel = entry - image_base;
+                let file_off = maps::vaddr_to_file_offset(&image, rel).ok_or_else(|| {
+                    RewriteError::Config(format!(
+                        "entry {entry:#x}: cannot map VA to file offset in {image}"
+                    ))
+                })?;
+                let mut orig_head = [0u8; 16];
+                std::fs::File::open(&image)
+                    .and_then(|mut f| {
+                        use std::io::{Read, Seek, SeekFrom};
+                        f.seek(SeekFrom::Start(file_off))?;
+                        f.read_exact(&mut orig_head)?;
+                        Ok(())
+                    })
+                    .map_err(|e| {
+                        RewriteError::Config(format!(
+                            "entry {entry:#x}: cannot read original bytes from {image}: {e}"
+                        ))
+                    })?;
+                let len = maps::first_insn_len(&orig_head).ok_or_else(|| {
+                    RewriteError::Config(format!(
+                        "entry {entry:#x}: first instruction {:02x?} not recognized; \
+                         refusing to guess a shift over a live uprobe",
+                        &orig_head[..4.min(orig_head.len())]
+                    ))
+                })?;
+                addr = entry + len;
+                shifted = true;
+                log::info!(
+                    "uprobe detected at entry {entry:#x} (orig insn {len}B); \
+                     shifting our int3 to {addr:#x}"
+                );
+            }
+
             let mut orig = [0u8; 1];
-            self.mem.read(*addr, &mut orig)?;
+            self.mem.read(addr, &mut orig)?;
             if orig[0] == 0xCC {
                 return Err(RewriteError::Config(format!(
                     "byte at {addr:#x} is already 0xCC; another tracer attached?"
                 )));
             }
-            self.mem.write(*addr, &[0xCC])?;
-            watchdog::spawn(self.pid, *addr, orig[0])?;
+            self.mem.write(addr, &[0xCC])?;
+            watchdog::spawn(self.pid, addr, orig[0])?;
             log::info!(
-                "breakpoint armed at {addr:#x} ({what}, orig {:#x})",
-                orig[0]
+                "breakpoint armed at {addr:#x} ({what}, orig {:#x}{})",
+                orig[0],
+                if shifted {
+                    ", shifted +4 over live uprobe"
+                } else {
+                    ""
+                }
             );
-            self.bps.push(Breakpoint { addr: *addr, orig });
+            self.bps.push(Breakpoint { addr, orig });
         }
         Ok(())
     }

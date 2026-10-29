@@ -185,6 +185,70 @@ pub fn is_dyn_elf(path: &str) -> Option<bool> {
     Some(u16::from_le_bytes(hdr[16..18].try_into().unwrap()) == 3)
 }
 
+/// Map a load-relative virtual address to its file offset via PT_LOAD
+/// segments. `rel_vaddr` = runtime VA minus the image's lowest mapping.
+pub fn vaddr_to_file_offset(path: &str, rel_vaddr: u64) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hdr = [0u8; 64];
+    f.read_exact(&mut hdr).ok()?;
+    if &hdr[0..4] != b"\x7fELF" || hdr[4] != 2 {
+        return None;
+    }
+    let rd16 = |b: &[u8]| u16::from_le_bytes(b.try_into().unwrap());
+    let rd32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
+    let rd64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+    let phoff = rd64(&hdr[32..40]);
+    let phentsize = rd16(&hdr[54..56]) as u64;
+    let phnum = rd16(&hdr[56..58]) as u64;
+    if phoff == 0 || phentsize < 56 {
+        return None;
+    }
+    for i in 0..phnum {
+        let mut ph = [0u8; 56];
+        f.seek(SeekFrom::Start(phoff + i * phentsize)).ok()?;
+        f.read_exact(&mut ph).ok()?;
+        if rd32(&ph[0..4]) != 1 {
+            continue; // PT_LOAD
+        }
+        let p_offset = rd64(&ph[8..16]);
+        let p_vaddr = rd64(&ph[16..24]);
+        let p_filesz = rd64(&ph[32..40]);
+        if rel_vaddr >= p_vaddr && rel_vaddr < p_vaddr.saturating_add(p_filesz) {
+            return Some(p_offset + (rel_vaddr - p_vaddr));
+        }
+    }
+    None
+}
+
+/// Length in bytes of the first instruction at `bytes`, for the handful of
+/// prologues that open SSL functions in the wild (endbr64 variants, classic
+/// push-rbp prologues). Returns None for anything unrecognized -- callers
+/// must fail closed rather than guess a shift past a live uprobe.
+pub fn first_insn_len(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() >= 4
+        && bytes[0] == 0xF3
+        && bytes[1] == 0x0F
+        && bytes[2] == 0x1E
+        && bytes[3] == 0xFA
+    {
+        return Some(4); // endbr64
+    }
+    if bytes[0] == 0x55 {
+        return Some(1); // push rbp
+    }
+    if bytes[0] == 0x41 && (bytes[1] & 0xF0) == 0x50 {
+        return Some(1); // push r12..r15
+    }
+    if bytes[0] == 0x48 && bytes[1] == 0x89 && bytes[2] == 0xE5 {
+        return Some(3); // mov rbp, rsp
+    }
+    if bytes[0] == 0x48 && bytes[1] == 0x83 && bytes[2] == 0xEC {
+        return Some(4); // sub rsp, imm8
+    }
+    None
+}
+
 /// GNU build-id (hex) from the ELF64 PT_NOTE segment of `path`, or None.
 /// Ported from the observation side's probes/elf_buildid.rs with the same
 /// guards: 64-bit little-endian only, and implausible PT_NOTE sizes are
