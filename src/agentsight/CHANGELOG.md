@@ -1,10 +1,24 @@
 # Changelog
 
-## [0.15.1] - Unreleased
+## 0.15.1
 
-### Changed
+### Features
+- Add a structured file-protection policy contract: normalized protections, static and re-resolved protected topology, race-safe path resolution, and legacy `path_rename` hook support.
+- Own policy activation and detach, stage policy maps transactionally, write policy generations to pinned maps, and define a structured policy map ABI.
+- Add resource limit checks.
 
-- Choose the runtime and DSH integration separately using the core and plugins RPMs.
+### Performance
+- Cache GenAI identifier hashes, vectorize SSL executable scans, and stream capture database queries.
+
+### Fixes
+- Explain file guard activation, report file guard capability, and validate file protection boundaries.
+- Ship per-architecture BPF objects so the enforcer payload follows the build target.
+- Attach SSL uprobes earlier to catch the first TLS connections, add verified Codex TLS offsets, and bound unknown process registration.
+- Preserve partial Qoder batch usage, usage-only batch records, bare JSON SSE usage, and the last usable batch usage.
+- Honor successful Gemini tool calls, retain Gemini function responses, and replay Gemini session previews.
+- Retain local session identity, attach local replies to their calls, disambiguate echoed tool call IDs, and compare complete repeated turns.
+- Preserve user config on schema migration and make session controls accessible.
+- Keep partial campaign reports and worker results, lock resource build publication, reject impossible benchmark metrics, preserve missing drop counters, bound recovery evidence by phase, and verify executed regression commands.
 
 ## 0.15.0
 
