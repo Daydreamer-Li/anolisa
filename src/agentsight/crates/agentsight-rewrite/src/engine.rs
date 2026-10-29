@@ -101,6 +101,37 @@ pub struct RewriteEngine {
 /// correctness bound, not a performance knob.
 const THREAD_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
+extern "C" fn on_alarm(_: c_int) {
+    // Empty: its only job is to interrupt the blocking waitpid (EINTR) so
+    // the event loop can rescan threads and check the shutdown flag.
+}
+
+/// Start the periodic ITIMER_REAL that wakes the blocking waitpid every
+/// THREAD_SCAN_INTERVAL. Replaces the PoC's 500µs WNOHANG busy-poll: the
+/// loop now sleeps in the kernel between events (idle CPU ~0) and only
+/// wakes on real ptrace events or the timer tick.
+fn start_scan_timer() {
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_alarm as usize;
+        // Deliberately WITHOUT SA_RESTART: the EINTR wake-up is the point.
+        sa.sa_flags = 0;
+        libc::sigaction(libc::SIGALRM, &sa, std::ptr::null_mut());
+        let tv = libc::timeval {
+            tv_sec: 0,
+            tv_usec: THREAD_SCAN_INTERVAL.as_micros() as libc::suseconds_t,
+        };
+        let it = libc::itimerval {
+            it_interval: tv,
+            it_value: tv,
+        };
+        assert_eq!(
+            libc::setitimer(libc::ITIMER_REAL, &it, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
 impl RewriteEngine {
     /// Resolve the SSL_write address in the target, seize all current
     /// threads, arm the breakpoint and spawn the crash watchdog.
@@ -220,6 +251,7 @@ impl RewriteEngine {
     /// the target exits. Always runs the shutdown/detach sequence before
     /// returning.
     pub fn run(&mut self, shutdown: &AtomicBool, max_hits: usize) -> Result<EngineStats> {
+        start_scan_timer();
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 log::info!("shutdown requested");
@@ -233,21 +265,17 @@ impl RewriteEngine {
                 log::info!("no threads left under control, target finished");
                 break;
             }
-            // Thread scan must run even when no tracee produces events
-            // (a blocking waitpid would otherwise starve it, and untraced
-            // threads die on the planted int3).
+            // Block until the next ptrace event. The ITIMER_REAL tick
+            // interrupts us every THREAD_SCAN_INTERVAL (EINTR) so the thread
+            // rescan and the shutdown check stay live while idle. Blocking
+            // (instead of the PoC's WNOHANG polling) removes the p99 polling
+            // tail: a stopped thread is served the moment its stop arrives.
             if self.last_thread_scan.elapsed() >= THREAD_SCAN_INTERVAL {
                 self.last_thread_scan = std::time::Instant::now();
                 self.seize_new_threads();
             }
             let mut status: c_int = 0;
-            let tid = unsafe { waitpid(-1, &mut status, __WALL | libc::WNOHANG) };
-            if tid == 0 {
-                // No pending event: brief park keeps the scan ticking without
-                // burning a core (sub-millisecond, well under one LLM RTT).
-                std::thread::sleep(std::time::Duration::from_micros(500));
-                continue;
-            }
+            let tid = unsafe { waitpid(-1, &mut status, __WALL) };
             if tid < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
