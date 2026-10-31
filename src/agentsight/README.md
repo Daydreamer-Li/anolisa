@@ -380,6 +380,15 @@ path; keep the adjacent `.sha256` receipt and pass that exact path as
 `ENFORCER_BIN` to the raw packager. A shared `target/release/agentsight-enforcer`
 is not a verified build result. `make build-mac` does not build the enforcer.
 
+Inode-mode DSL file guards reject Apply when guarded files already have writable handles or
+mappings; close those resources and retry. Read-only access remains supported. See the
+[admission requirements](../../docs/user-guide/en/agentsight/integrations.md#legacy-inode-mode-file-guard).
+
+Kernel source changes require regenerating both BPF objects for each Linux architecture with
+`ACTPLANE_REBUILD_BPF=1` in the ActPlane BPF toolchain, then updating the object hashes in
+`scripts/build-enforcer.sh`. Commit the generated `kernel-source.fnv64` receipts with the
+objects. A stale source receipt rejects the build, so a source-only patch cannot ship old BPF.
+
 For Linux cross builds, `scripts/build-enforcer.sh --target
 <aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu>` selects the target explicitly;
 without arguments it builds for the host. `CARGO` may select a prepared Cross

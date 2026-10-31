@@ -4,6 +4,15 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+const KERNEL_SOURCES: &[&str] = &[
+    "process.bpf.c",
+    "process.h",
+    "taint.h",
+    "taint_engine.bpf.h",
+    "capability.bpf.h",
+    "channel.bpf.h",
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let out = PathBuf::from(env::var("OUT_DIR")?);
@@ -18,6 +27,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
     println!("cargo:rerun-if-env-changed=ACTPLANE_REBUILD_BPF");
     println!("cargo:rerun-if-changed=build.rs");
+    // This is a staleness check; release attestation still pins object hashes.
+    let mut fingerprint = 0xcbf29ce484222325u64;
+    for file in KERNEL_SOURCES {
+        let source = manifest.join(file);
+        println!("cargo:rerun-if-changed={}", source.display());
+        let bytes = std::fs::read(&source)
+            .map_err(|error| format!("read BPF source {}: {error}", source.display()))?;
+        for byte in file.bytes().chain([0]).chain(bytes) {
+            fingerprint = (fingerprint ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    let fingerprint = format!("{fingerprint:016x}\n");
+    let receipt = prebuilt.join("kernel-source.fnv64");
+    println!("cargo:rerun-if-changed={}", receipt.display());
 
     if env::var_os("ACTPLANE_REBUILD_BPF").is_some() {
         for file in [
@@ -50,6 +73,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for name in ["process.bpf.o", "process-inode-only.bpf.o"] {
             std::fs::copy(manifest.join(&output).join(name), prebuilt.join(name))?;
         }
+        std::fs::write(&receipt, &fingerprint)?;
+    }
+
+    let recorded = std::fs::read_to_string(&receipt).map_err(|error| {
+        format!(
+            "read BPF source receipt {}: {error}; regenerate the BPF objects",
+            receipt.display()
+        )
+    })?;
+    if recorded != fingerprint {
+        return Err(format!(
+            "stale prebuilt BPF objects for {target_arch}: rebuild with ACTPLANE_REBUILD_BPF=1 in the Linux BPF toolchain, then refresh the build-enforcer.sh object attestations; source fixes must not ship with old objects"
+        ).into());
     }
 
     // Missing committed artifacts fail closed; never implicitly invoke make

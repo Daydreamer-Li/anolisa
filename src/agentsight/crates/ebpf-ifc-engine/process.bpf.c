@@ -2901,10 +2901,30 @@ int BPF_PROG(enforce_file_mprotect, struct vm_area_struct *vma,
 }
 
 SEC("lsm/path_truncate")
-int BPF_PROG(enforce_path_truncate, const struct path *path_arg)
+int BPF_PROG(enforce_path_truncate, const struct path *path_arg, int ret)
 {
+	if (ret)
+		return ret;
 #ifdef INODE_GUARD_ONLY
-	return 0; /* No path resolution; truncate not guarded in inode mode */
+	/* truncate(2) has no struct file. Resolve the registered identity directly,
+	 * including ftruncate on kernels predating the file_truncate hook. */
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+	struct file_scratch *scratch = file_scratch_buf();
+	if (!enforce_mode || !te_pid_active(pid) || !scratch)
+		return 0;
+	__builtin_memset(scratch, 0, sizeof(*scratch));
+	te_resolve_file_id(TE_REF_PATH, path_arg, 0, scratch->path, &scratch->fid);
+	struct file_domain_id key = {
+		.fid = scratch->fid,
+		.domain_id = cap_domain_for_pid(pid),
+	};
+	struct inode_path_val *known = bpf_map_lookup_elem(&te_inode_path, &key);
+	if (!known)
+		return 0;
+	__builtin_memcpy(scratch->path, known->path, sizeof(scratch->path));
+	scratch->path[sizeof(scratch->path) - 1] = '\0';
+	return te_handle_file_event(pid, scratch->path, &scratch->fid,
+				    TE_ACCESS_WRITE, TE_MODE_BLOCK);
 #else
 	return te_handle_file(TE_REF_PATH, path_arg, 0, TE_ACCESS_WRITE,
 			      TE_MODE_BLOCK);

@@ -146,6 +146,9 @@ for arch in ("x86_64", "aarch64", "riscv64"):
 
 fixture = tmp / "rebuild-engine"
 fixture.mkdir()
+for name in ("process.bpf.c", "process.h", "taint.h", "taint_engine.bpf.h",
+             "capability.bpf.h", "channel.bpf.h"):
+    (fixture / name).write_bytes((engine / name).read_bytes())
 tools = tmp / "rebuild-tools"
 tools.mkdir()
 (tools / "make").write_text('''#!/usr/bin/env python3
@@ -170,11 +173,20 @@ for arch, bpf_arch in (("x86_64", "x86"), ("aarch64", "arm64")):
     pathlib.Path(env["OUT_DIR"]).mkdir()
     env.pop("ACTPLANE_REBUILD_BPF", None)
     result = subprocess.run([str(tmp / "engine-build")], env=env, capture_output=True)
-    assert result.returncode != 0 and b"copy " in result.stderr, "missing object triggered make"
+    assert result.returncode != 0 and b"read BPF source receipt" in result.stderr, \
+        "missing source receipt triggered make"
     env["ACTPLANE_REBUILD_BPF"] = "1"
     subprocess.run([str(tmp / "engine-build")], env=env, check=True, capture_output=True)
     for name in ("process.bpf.o", "process-inode-only.bpf.o"):
         assert (pathlib.Path(env["OUT_DIR"]) / name).read_text() == bpf_arch + name
+    env.pop("ACTPLANE_REBUILD_BPF")
+    subprocess.run([str(tmp / "engine-build")], env=env, check=True, capture_output=True)
+    header = fixture / "process.h"
+    original = header.read_bytes()
+    header.write_bytes(original + b"\n")
+    result = subprocess.run([str(tmp / "engine-build")], env=env, capture_output=True)
+    assert result.returncode != 0 and b"stale prebuilt BPF objects" in result.stderr
+    header.write_bytes(original)
 PY
 
 require_literal() {
@@ -273,6 +285,7 @@ for name in ("lib.rs", "file_protection_generation.rs", "file_protection_generat
     (engine / "src" / name).write_bytes(f"staged-{name}".encode())
 for arch in ("x86_64", "aarch64"):
     (engine / "prebuilt" / arch).mkdir()
+    (engine / "prebuilt" / arch / "kernel-source.fnv64").write_text("fixture-source\n")
     (engine / "prebuilt" / arch / "process.bpf.o").write_bytes(f"{arch}-full-object".encode())
     (engine / "prebuilt" / arch / "process-inode-only.bpf.o").write_bytes(
         f"{arch}-inode-object".encode())

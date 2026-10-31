@@ -18,9 +18,10 @@ use agentsight_enforcer::{ActPlaneBackend, BackendError, EnforcementBackend, Sub
 use uuid::Uuid;
 
 const WORKER: &str = r#"
-import errno, os, socket, sys
+import errno, mmap, os, socket, sys
 path = sys.argv[1]
 fd = os.open(path, os.O_RDONLY)
+held_mapping = None
 print('ready', flush=True)
 for line in sys.stdin:
     op = line.strip()
@@ -29,6 +30,27 @@ for line in sys.stdin:
             os.unlink(path)
         elif op == 'rename':
             os.rename(path, path + '.renamed')
+        elif op == 'rename_parent':
+            parent = os.path.dirname(path)
+            os.rename(parent, parent + '.renamed')
+        elif op == 'rename_ancestor':
+            ancestor = os.path.dirname(os.path.dirname(path))
+            os.rename(ancestor, ancestor + '.renamed')
+        elif op == 'rename_sibling':
+            sibling = os.path.join(os.path.dirname(path), 'sibling')
+            os.mkdir(sibling)
+            os.rename(sibling, sibling + '.renamed')
+        elif op == 'truncate':
+            os.truncate(path, 0)
+        elif op == 'hold_mapping':
+            writable = os.open(path, os.O_RDWR)
+            try:
+                held_mapping = mmap.mmap(writable, 0, access=mmap.ACCESS_WRITE)
+            finally:
+                os.close(writable)
+        elif op == 'close_mapping':
+            held_mapping.close()
+            held_mapping = None
         elif op == 'readfd':
             os.lseek(fd, 0, os.SEEK_SET)
             os.read(fd, 4096)
@@ -1250,7 +1272,10 @@ fn structured_policy_classifier() {
 
 fn file_guard() {
     let files = Files::new("agent-file-guard");
-    let source = files.source();
+    let directory = files.root.join("a/b");
+    fs::create_dir_all(&directory).expect("multi-level protected path");
+    let source = directory.join("source").to_str().unwrap().to_owned();
+    fs::rename(files.source(), &source).expect("move fixture below multiple parents");
     let mut worker = Worker::spawn(&source);
     let backend = ActPlaneBackend::open().expect("file guard runtime");
     assert!(
@@ -1262,7 +1287,7 @@ fn file_guard() {
     );
     let events = backend.subscribe(Uuid::new_v4(), SubscriberClass::Required);
     let binding_id = Uuid::new_v4();
-    backend.apply(ApplyPolicy {
+    let request = ApplyPolicy {
         binding_id,
         agent_id: "inode-test".into(),
         session_id: None,
@@ -1275,7 +1300,30 @@ fn file_guard() {
         ),
         policy_mode: Some(PolicyMode::Enforce),
         file_protection_policy: None,
-    }).expect("apply file guard");
+    };
+    let original = fs::read(&source).expect("original bytes");
+    let original_inode = fs::metadata(&source).expect("original identity").ino();
+    assert_eq!(worker.run("hold_mapping"), "ok");
+    let error = backend
+        .apply(request.clone())
+        .expect_err("reject pre-existing writable mapping");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot admit inode write protection"),
+        "{error}"
+    );
+    assert!(
+        backend
+            .bindings()
+            .expect("bindings after rejection")
+            .is_empty()
+    );
+    assert_eq!(fs::read(&source).unwrap(), original);
+    assert_eq!(worker.run("close_mapping"), "ok");
+    backend
+        .apply(request)
+        .expect("apply after unsafe mapping closes");
     for operation in ["unlink", "rename"] {
         assert_eq!(worker.run(operation), "errno=1");
         assert!(PathBuf::from(&source).exists());
@@ -1288,6 +1336,40 @@ fn file_guard() {
         assert_eq!(event.reason.as_deref(), Some("keep fixture"));
         assert!(event.blocked);
     }
+    for operation in ["rename_parent", "rename_ancestor"] {
+        assert_eq!(worker.run(operation), "errno=1");
+        let event = events
+            .recv_timeout(Duration::from_secs(3))
+            .expect("ancestor rename audit");
+        assert_eq!(event.operation, "rename");
+        assert!(event.blocked);
+    }
+    assert_eq!(worker.run("truncate"), "errno=1");
+    let event = events
+        .recv_timeout(Duration::from_secs(3))
+        .expect("truncate audit");
+    assert_eq!(event.operation, "write");
+    assert!(event.blocked);
+    assert_eq!(
+        worker.run("mmap"),
+        "ok",
+        "read-only mappings remain allowed"
+    );
+    assert_eq!(
+        worker.run("hold_mapping"),
+        "errno=1",
+        "new writable mapping denied"
+    );
+    let _ = events
+        .recv_timeout(Duration::from_secs(3))
+        .expect("write-open audit");
+    assert_eq!(fs::read(&source).unwrap(), original);
+    assert_eq!(fs::metadata(&source).unwrap().ino(), original_inode);
+    assert_eq!(
+        worker.run("rename_sibling"),
+        "ok",
+        "unrelated directories remain mutable"
+    );
     let unguarded_path = files.root.join("outside");
     fs::hard_link(&source, &unguarded_path).expect("outside-domain hardlink");
     fs::remove_file(&unguarded_path).expect("unbound caller is not blocked");

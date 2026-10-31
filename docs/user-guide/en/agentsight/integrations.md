@@ -159,6 +159,21 @@ Protocol v5 adds a versioned `file_protection_policy` payload, mutually exclusiv
 `policy_dsl`. The mock backend still rejects structured policies. Existing DSL semantics are
 retained, but v4 clients must upgrade with the enforcer because protocol v4 frames are rejected.
 
+### Legacy inode-mode file guard
+
+Exact-file DSL guards in inode mode also protect each ancestor directory against rename and
+removal by the bound domain. Unrelated directories and unbound management processes retain
+their normal access. The DSL lowers `unlink` to a write rule, so this mode also denies content
+writes and length changes; use structured `delete`-only policies when ordinary writes are needed.
+
+Before activation, the enforcer acquires temporary read leases on guarded files. Existing
+writable handles or mappings (even after their original descriptors close) cause Apply to fail
+with `cannot admit inode write protection`, rather than reporting an enforced binding. Close
+those resources and retry. Read-only handles and mappings remain allowed. Filesystems must
+support Linux read leases, and the enforcer needs file ownership or `CAP_LEASE`; unsupported
+leases also reject Apply. Leases cover all writers of the inode during Apply and are released
+after hook installation and final validation. They do not revoke resources in running processes.
+
 ### Structured file protection: phase-one boundaries
 
 The `file_protection_policy` payload protects exact file entries or directory trees, including

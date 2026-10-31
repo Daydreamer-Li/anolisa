@@ -12,6 +12,7 @@ use actplane_ifc_compiler::ast::{Clause, Effect, Expr, Kind, Op, Policy, Rule};
 use actplane_ifc_compiler::{Compiled, RuleMeta, parse};
 use ebpf_ifc_engine::{INODE_GUARD_RENAME, INODE_GUARD_UNLINK, PinnedEngine};
 
+use super::inode_admission::InodeAdmission;
 use crate::BackendError;
 
 #[derive(Clone, Debug)]
@@ -27,6 +28,8 @@ struct InodeFile {
 #[derive(Clone, Debug, Default)]
 pub(super) struct InodePolicy {
     files: Vec<InodeFile>,
+    ancestors: Vec<InodeFile>,
+    admission: Vec<InodeAdmission>,
 }
 
 impl InodePolicy {
@@ -53,8 +56,45 @@ impl InodePolicy {
         }
         for (path, rule_id) in guards {
             prepared.add_file(&path, Some(rule_id))?;
+            for parent in Path::new(&path).ancestors().skip(1) {
+                let parent = parent
+                    .to_str()
+                    .ok_or_else(|| invalid("non-UTF-8 ancestor"))?;
+                if !prepared.ancestors.iter().any(|entry| entry.path == parent) {
+                    prepared
+                        .ancestors
+                        .push(pin_inode(parent, Some(rule_id), false)?);
+                }
+            }
+        }
+        for file in prepared.files.iter().filter(|file| file.rule_id.is_some()) {
+            prepared
+                .admission
+                .push(InodeAdmission::acquire(&file._file, &file.path)?);
         }
         Ok(prepared)
+    }
+
+    /// Validates the held topology and barriers after hooks are installed, then releases leases.
+    pub(super) fn finish_admission(&mut self) -> Result<(), BackendError> {
+        for file in self.files.iter().chain(&self.ancestors) {
+            let metadata = fs::metadata(&file.path)
+                .map_err(|error| invalid(format!("revalidate '{}': {error}", file.path)))?;
+            if metadata.ino() != file.ino || userspace_dev_to_kernel(metadata.dev()) != file.dev {
+                return Err(invalid(format!(
+                    "inode path '{}' changed during policy apply",
+                    file.path
+                )));
+            }
+        }
+        for barrier in &self.admission {
+            barrier.validate()?;
+        }
+        for barrier in &self.admission {
+            barrier.release()?;
+        }
+        self.admission.clear();
+        Ok(())
     }
 
     fn add_file(&mut self, path: &str, rule_id: Option<u32>) -> Result<(), BackendError> {
@@ -104,7 +144,7 @@ impl InodePolicy {
         mut register_path: impl FnMut(&InodeFile) -> io::Result<()>,
         mut guard: impl FnMut(&InodeFile, u32) -> io::Result<()>,
     ) -> io::Result<()> {
-        for file in &self.files {
+        for file in self.files.iter().chain(&self.ancestors) {
             register_path(file)
                 .map_err(|error| registration_error("register inode path", file, error))?;
             if let Some(rule_id) = file.rule_id {
@@ -213,6 +253,14 @@ fn matches_clause(meta: &RuleMeta, rule: &Rule, clause: &Clause) -> bool {
 }
 
 fn pin_file(path: &str, rule_id: Option<u32>) -> Result<InodeFile, BackendError> {
+    pin_inode(path, rule_id, true)
+}
+
+fn pin_inode(
+    path: &str,
+    rule_id: Option<u32>,
+    regular_file: bool,
+) -> Result<InodeFile, BackendError> {
     if !Path::new(path).is_absolute() || path.contains(['*', '?', '[', ']', '{', '}', '\\']) {
         return Err(invalid(format!(
             "'{path}': inode-only paths must be exact absolute literals, not globs; use full-path mode for patterns"
@@ -241,9 +289,14 @@ fn pin_file(path: &str, rule_id: Option<u32>) -> Result<InodeFile, BackendError>
     let metadata = file
         .metadata()
         .map_err(|error| invalid(format!("'{path}': cannot stat held inode: {error}")))?;
-    if !metadata.is_file() {
+    if (regular_file && !metadata.is_file()) || (!regular_file && !metadata.is_dir()) {
+        let expected = if regular_file {
+            "regular files"
+        } else {
+            "directories"
+        };
         return Err(invalid(format!(
-            "'{path}': inode paths must name existing regular files"
+            "'{path}': inode paths must name existing {expected}"
         )));
     }
     Ok(InodeFile {
@@ -579,5 +632,42 @@ mod tests {
                 (major << 20) | minor
             );
         }
+    }
+
+    #[test]
+    fn ancestor_guards_are_deduplicated_and_keep_the_target_rule() {
+        let fixture = Fixture::new();
+        let path = fixture.file("p");
+        let second = fixture.file("q");
+        let dsl = format!(
+            "{}rule second:\n block unlink file \"{second}\"\n because \"keep q\"\n",
+            guard_dsl(&path, "")
+        );
+        let prepared = prepare(&dsl).unwrap();
+        assert_eq!(prepared.files.len(), 2);
+        let parents: Vec<_> = Path::new(&path).ancestors().skip(1).collect();
+        assert_eq!(prepared.ancestors.len(), parents.len());
+        for parent in parents {
+            let guard = prepared
+                .ancestors
+                .iter()
+                .find(|entry| Path::new(&entry.path) == parent)
+                .unwrap();
+            assert_eq!(guard.rule_id, Some(0));
+            assert!(guard._file.metadata().unwrap().is_dir());
+        }
+    }
+
+    #[test]
+    fn admission_rejects_parent_drift_before_success() {
+        let fixture = Fixture::new();
+        let path = fixture.file("p");
+        let mut prepared = prepare(&guard_dsl(&path, "")).unwrap();
+        let moved = fixture.0.with_extension("moved");
+        fs::rename(&fixture.0, &moved).unwrap();
+        assert!(prepared.finish_admission().is_err());
+        fs::rename(moved, &fixture.0).unwrap();
+        prepared.finish_admission().unwrap();
+        assert!(prepared.admission.is_empty());
     }
 }

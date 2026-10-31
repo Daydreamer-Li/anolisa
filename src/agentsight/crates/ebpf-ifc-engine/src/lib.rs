@@ -109,9 +109,9 @@ const PINNED_FILE_PROFILE_MARKER: &str =
 const PINNED_CREDENTIAL_PROFILE_MARKER: &str =
     "agentsight_profile_credential_exfiltration_v5_a62e5d9d96f91101cda019519053e950d532380a";
 const PINNED_FULL_PROFILE_MARKER: &str =
-    "agentsight_profile_full_v5_a62e5d9d96f91101cda019519053e950d532380a";
+    "agentsight_profile_full_v6_a62e5d9d96f91101cda019519053e950d532380a";
 const PINNED_AGENT_FILE_GUARD_MARKER: &str =
-    "agentsight_profile_agent_file_guard_v5_a62e5d9d96f91101cda019519053e950d532380a";
+    "agentsight_profile_agent_file_guard_v6_a62e5d9d96f91101cda019519053e950d532380a";
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PinnedEnginePaths {
     root: PathBuf,
@@ -4926,7 +4926,7 @@ mod tests {
     #[test]
     fn agent_file_guard_profile_marker_is_distinct() {
         let marker = HookReserve::agent_file_guard().profile_marker();
-        assert!(marker.contains("agent_file_guard_v5"));
+        assert!(marker.contains("agent_file_guard_v6"));
         assert!(marker.contains("a62e5d9d96f91101cda019519053e950d532380a"));
         assert_ne!(marker, HookReserve::full_profile().profile_marker());
         assert_ne!(marker, HookReserve::file_enforcement().profile_marker());

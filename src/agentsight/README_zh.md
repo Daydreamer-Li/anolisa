@@ -375,6 +375,14 @@ ActPlane enforcer，输出到每次新建的独立目录。脚本打印其绝对
 共享目录中的 `target/release/agentsight-enforcer` 不代表经验证的本次构建结果。
 `make build-mac` 不会构建 enforcer。
 
+inode 模式的 DSL 文件防护在目标已有可写句柄或映射时拒绝 Apply；关闭这些资源后重试，
+只读访问仍可使用。见[准入要求](../../docs/user-guide/zh/agentsight/integrations.md#旧-dsl-的-inode-模式文件防护)。
+
+修改内核源码后，必须在 ActPlane BPF 工具链中通过 `ACTPLANE_REBUILD_BPF=1` 为两种 Linux
+架构分别重建两份 BPF 对象，并更新 `scripts/build-enforcer.sh` 中的对象哈希。
+将生成的 `kernel-source.fnv64` 凭据与对象一起提交。源码凭据过期时构建会拒绝继续，
+避免仅修改源码后仍发布旧 BPF。
+
 Linux 交叉构建通过 `scripts/build-enforcer.sh --target
 <aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu>` 显式选择目标；不传参数时
 保持宿主构建。`CARGO` 可指定准备好的 Cross 包装入口，但必须遵守指定目标。

@@ -38,6 +38,7 @@ mod file_protection_policy;
 mod file_protection_resolver;
 mod file_protection_runtime;
 mod file_protection_topology;
+mod inode_admission;
 mod inode_policy;
 use file_protection_policy::NormalizedFileProtectionPolicy;
 use file_protection_runtime::{ActiveFileProtection, PreparedFileProtection};
@@ -491,6 +492,15 @@ impl ActPlaneBackend {
                 error,
                 cleanup,
             ));
+        }
+        if let Err(error) = active.inode_policy.finish_admission() {
+            let cleanup = self.cleanup_binding(&active.binding.request, id, None);
+            if !cleanup.is_empty() {
+                active.binding.state = BindingState::Failed;
+                active.binding.message = Some(cleanup.join("; "));
+                bindings.insert(id, active);
+            }
+            return Err(activation_error_with_cleanup(error, cleanup));
         }
         if let Some(staged) = staged_file_protection {
             match staged.activate() {

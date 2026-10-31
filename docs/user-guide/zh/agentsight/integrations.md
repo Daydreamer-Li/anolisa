@@ -135,6 +135,18 @@ hook 并未挂载——引擎仍会以 `effect=block` 且 `blocked=false` 的 vi
 协议 v5 新增带版本的 `file_protection_policy` 载荷，与 `policy_dsl` 互斥。mock 后端仍然拒绝
 结构化策略。旧 DSL 语义不变，但协议 v4 帧会被拒绝，因此客户端需与 enforcer 一起升级。
 
+### 旧 DSL 的 inode 模式文件防护
+
+inode 模式的精确文件 DSL 规则同时阻止绑定 domain 对各级父目录改名或删除。无关目录以及未绑定的
+管理进程保持正常访问。DSL 将 `unlink` 降为 write 规则，因此该模式也阻止内容写入和长度变更；
+需要允许普通写入时，应使用结构化的仅 `delete` 策略。
+
+激活前，enforcer 对受保护文件获取临时 read lease。已有可写句柄或映射（包括原始 FD 已关闭的映射）
+会使 Apply 返回 `cannot admit inode write protection`，不会报告绑定已 enforced。关闭这些资源后重试。
+只读句柄和映射仍可使用。文件系统必须支持 Linux read lease，且 enforcer 需要拥有文件或具备
+`CAP_LEASE`；不支持 lease 时也会拒绝 Apply。Apply 期间 lease 约束该 inode 的所有写入者，
+hook 安装和最终校验完成后释放，不会撤销运行中进程已有的资源。
+
 ### 结构化文件保护：一期边界
 
 `file_protection_policy` 支持保护精确文件目录项或整个目录树（含未来子项），并按目标排除精确目录项
